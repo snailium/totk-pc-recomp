@@ -63,7 +63,10 @@ void SetLastError(DWORD err) { tls_last_error = err; }
 
 static pthread_mutex_t g_slot_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static void *slot(void **p, size_t size, int is_cond) {
+// kind: 0 a mutex for an SRW lock (not recursive, as on Windows), 1 a condition variable, 2 a mutex for a critical
+// section (recursive: a Windows CRITICAL_SECTION may be entered again by the thread that holds it, and the runtime does
+// that -- vk_staging enters cmd_lock while an upload batch already holds it).
+static void *slot(void **p, size_t size, int kind) {
     void *v = __atomic_load_n(p, __ATOMIC_ACQUIRE);
     if (v) return v;
     pthread_mutex_lock(&g_slot_lock);
@@ -71,7 +74,7 @@ static void *slot(void **p, size_t size, int is_cond) {
     if (!v) {
         v = calloc(1, size);
         if (v) {
-            if (is_cond) {
+            if (kind == 1) {
                 pthread_condattr_t a;
                 pthread_condattr_init(&a);
                 pthread_condattr_setclock(&a, CLOCK_MONOTONIC);
@@ -80,7 +83,7 @@ static void *slot(void **p, size_t size, int is_cond) {
             } else {
                 pthread_mutexattr_t a;
                 pthread_mutexattr_init(&a);
-                pthread_mutexattr_settype(&a, PTHREAD_MUTEX_NORMAL);
+                pthread_mutexattr_settype(&a, kind == 2 ? PTHREAD_MUTEX_RECURSIVE : PTHREAD_MUTEX_NORMAL);
                 pthread_mutex_init(v, &a);
                 pthread_mutexattr_destroy(&a);
             }
@@ -92,6 +95,7 @@ static void *slot(void **p, size_t size, int is_cond) {
 }
 
 #define MUTEX(l) ((pthread_mutex_t *)slot(&(l)->p, sizeof(pthread_mutex_t), 0))
+#define CSMUTEX(l) ((pthread_mutex_t *)slot(&(l)->p, sizeof(pthread_mutex_t), 2))
 #define COND(c) ((pthread_cond_t *)slot(&(c)->p, sizeof(pthread_cond_t), 1))
 
 void InitializeSRWLock(PSRWLOCK l) { (void)MUTEX(l); }
@@ -118,10 +122,10 @@ BOOL SleepConditionVariableSRW(PCONDITION_VARIABLE c, PSRWLOCK l, DWORD ms, ULON
 void WakeConditionVariable(PCONDITION_VARIABLE c) { pthread_cond_signal(COND(c)); }
 void WakeAllConditionVariable(PCONDITION_VARIABLE c) { pthread_cond_broadcast(COND(c)); }
 
-void InitializeCriticalSection(LPCRITICAL_SECTION c) { (void)MUTEX(c); }
-void EnterCriticalSection(LPCRITICAL_SECTION c) { pthread_mutex_lock(MUTEX(c)); }
+void InitializeCriticalSection(LPCRITICAL_SECTION c) { (void)CSMUTEX(c); }
+void EnterCriticalSection(LPCRITICAL_SECTION c) { pthread_mutex_lock(CSMUTEX(c)); }
 void LeaveCriticalSection(LPCRITICAL_SECTION c) { pthread_mutex_unlock((pthread_mutex_t *)c->p); }
-BOOL TryEnterCriticalSection(LPCRITICAL_SECTION c) { return pthread_mutex_trylock(MUTEX(c)) == 0; }
+BOOL TryEnterCriticalSection(LPCRITICAL_SECTION c) { return pthread_mutex_trylock(CSMUTEX(c)) == 0; }
 void DeleteCriticalSection(LPCRITICAL_SECTION c) { (void)c; }
 
 // ---- interlocked
