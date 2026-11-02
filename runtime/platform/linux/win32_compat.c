@@ -455,7 +455,8 @@ static int utf8_from_wide(const WCHAR *w, char *out, size_t cap) {
         uint32_t c = (uint32_t)*w;
         char buf[4];
         int n;
-        if (c < 0x80) { buf[0] = (char)c; n = 1; }
+        if (c == '\\') { buf[0] = '/'; n = 1; }   // the runtime builds some paths with Windows separators
+        else if (c < 0x80) { buf[0] = (char)c; n = 1; }
         else if (c < 0x800) { buf[0] = (char)(0xC0 | (c >> 6)); buf[1] = (char)(0x80 | (c & 0x3F)); n = 2; }
         else if (c < 0x10000) {
             buf[0] = (char)(0xE0 | (c >> 12)); buf[1] = (char)(0x80 | ((c >> 6) & 0x3F));
@@ -472,6 +473,7 @@ static int utf8_from_wide(const WCHAR *w, char *out, size_t cap) {
     return (int)o;
 }
 
+// Forward slashes become backslashes on the way back: the runtime compares paths with the separator it uses.
 static size_t wide_from_utf8(const char *s, WCHAR *out, size_t cap) {
     size_t o = 0;
     while (*s && o + 1 < cap) {
@@ -582,9 +584,15 @@ BOOL FlushFileBuffers(HANDLE h) {
     return f && f->kind == K_FILE && fsync(f->fd) == 0;
 }
 
+// errno to the Win32 codes the runtime tests for after a failed lookup.
+static void set_error_from_errno(int e) {
+    SetLastError(e == ENOENT ? ERROR_FILE_NOT_FOUND : e == ENOTDIR ? ERROR_PATH_NOT_FOUND :
+                 e == EACCES ? ERROR_ACCESS_DENIED : e);
+}
+
 static DWORD stat_attributes(const char *path) {
     struct stat st;
-    if (stat(path, &st)) return 0xFFFFFFFFu;
+    if (stat(path, &st)) { set_error_from_errno(errno); return 0xFFFFFFFFu; }
     DWORD a = S_ISDIR(st.st_mode) ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
     if (!(st.st_mode & S_IWUSR)) a |= FILE_ATTRIBUTE_READONLY;
     return a;
@@ -980,7 +988,7 @@ void *VirtualAlloc(void *addr, SIZE_T size, DWORD type, DWORD prot) {
     if (addr) flags |= MAP_FIXED_NOREPLACE;
     void *m = mmap(addr, n, p, flags, -1, 0);
     if (m == MAP_FAILED) { SetLastError(errno == EEXIST ? ERROR_ALREADY_EXISTS : errno); return NULL; }
-    if (type & MEM_WRITE_WATCH) watch_register(m, n);   // reservations too: the pages are committed inside it later
+    if ((type & MEM_WRITE_WATCH) && !getenv("TOTK_NO_WRITE_WATCH")) watch_register(m, n);   // reservations too: the pages are committed inside it later
     return m;
 }
 

@@ -150,6 +150,13 @@ Acceptance for each item is a command that fails before and passes after.
 - [x] the RomFS overlay applies: `RomFS ready: 304473 files, 1 overlays` after `tools/make_romfs_patches.py` writes
       `romfs-patches/` next to the binary (the installer's prepare step does this on Windows)
 - [x] async preemption dispatches interrupts (`kernel: interrupt 0x1009 p47 ...`), as on Windows
+- [x] the boot reaches the same stage as the Windows build: audio (`audren: renderer open`), the save mount, the first
+      Vulkan replay and the game's first vibration value. Three portability bugs stood in the way: `GetFileAttributesW`
+      failed without setting a Win32 error (so a missing directory looked like `ERROR_ALREADY_EXISTS`), paths built with
+      backslashes did not resolve, and a fresh profile (no committed save) made the save working copy fail
+- [ ] **async preemption corrupts guest state**: with `TOTK_ASYNC_PREEMPT=0` the boot goes through; with it on the guest
+      dies in an SDK memcpy soon after `hid: controllers initialized`. The suspend/`SetThreadContext` path needs to be
+      made safe (likely a thread suspended inside a host call or between the Cpu fields and the host stack)
 - [ ] title screen on `.101` and on BC-250 Bazzite — the boot now loads content (`/RSDB/*.rstbl.byml.zs`,
       `/Pack/*.pack.zs`) and stops in the SDK's own `memcpy` (`f_70007bfa6c`/`f_70007bfa94`, deterministic, from
       `f_70007bd0b0`). The copy overruns its source: `si_addr` is `0x737265cc`, inside the heap but past the source

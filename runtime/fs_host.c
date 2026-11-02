@@ -272,7 +272,14 @@ static int same_file_w(const wchar_t *a, const wchar_t *b) {
 // 0 on success.
 static int copy_tree_w(const wchar_t *src, const wchar_t *dst, const wchar_t *base, int durable, int *nfiles,
                        int *nlinked, uint64_t *bytes) {
-    if (!CreateDirectoryW(dst, NULL)) return -1;
+    // A fresh profile has no committed save yet: copying a tree that is not there makes an empty one, which is what the
+    // working copy of a first run is. (The Windows installer's prepare step always left a save behind, so upstream never
+    // took this path.)
+    if (!exists_w(src)) {
+        if (exists_w(dst)) return 0;
+        return CreateDirectoryW(dst, NULL) ? 0 : -1;
+    }
+    if (!CreateDirectoryW(dst, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) return -1;
     wchar_t *pattern = wjoin(src, L"*");
     WIN32_FIND_DATAW fd;
     HANDLE f = FindFirstFileW(pattern, &fd);
