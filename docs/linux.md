@@ -312,6 +312,9 @@ that a `RESET` query reports none.
   signalled by host code tens of thousands of times, so the loop does run; the other (0x1003, the game's own
   `InterProcessEvent::Create`) is waited on and **never signalled by anything**. Nothing is blocked on a lock; the
   loader threads sit idle in `ReceiveLightMessageQueue` because no work reaches them.
+- `TOTK_THREAD_LOG=1` logs each guest thread's exit with its entry point; `kill -QUIT` now also reports how many threads
+  were created against how many are alive. In the frozen state that is 51 created, 50 alive, one normal exit
+  (`sdk+0x1302a0`, the SDK's thread start trampoline), so no loader thread died on the way.
 - `kill -QUIT <pid>` prints every guest thread: handle, priority, core, host depth, the lifted function it is in, and
   the host call it is inside (plus the wait state when it is blocked). This is what turned "the game stops after the
   first vibration value" into "the main thread waits in `nn::os::detail::InterProcessEventImplByHorizon::Wait` on an

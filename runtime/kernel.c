@@ -1406,6 +1406,12 @@ static void thread_finish(RtThread *t) {
     if (t->hthr) CloseHandle(t->hthr);   // no waiter interrupts a thread without a core
     t->hthr = NULL;
     t->exited = 1;
+    // A loader or worker thread that ends early leaves its waiter waiting for ever; name it at the moment it goes.
+    if (getenv("TOTK_THREAD_LOG")) {
+        char d[128];
+        rt_logf("kernel: thread %#x exited (entry %s, threads created %llu)\n", t->handle,
+                ldr_describe(t->entry, d, sizeof d), (unsigned long long)g_created);
+    }
     wake_sync_waiters();
     if (t->closed) thr_free(t);
     unlock();
@@ -2304,7 +2310,7 @@ void kern_dump_threads(const char *why) {
                     kind, (unsigned long long)h, (unsigned long long)(w >> 32), t->waker);
         }
     }
-    dprintf(2, "threads: %d total\n", n);
+    dprintf(2, "threads: %d total, %llu created\n", n, (unsigned long long)g_created);
     __atomic_store_n(&busy, 0, __ATOMIC_RELEASE);
 }
 
