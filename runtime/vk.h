@@ -9,11 +9,9 @@
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_win32.h>
 #else
-#ifndef VK_USE_PLATFORM_XCB_KHR
-#define VK_USE_PLATFORM_XCB_KHR 1
-#endif
+// The surface itself is made by SDL_Vulkan_CreateSurface, so the instance only needs whatever SDL asks for; no
+// platform header is included here.
 #include <vulkan/vulkan.h>
-#include <vulkan/vulkan_xcb.h>
 #endif
 #include <stdint.h>
 #pragma clang diagnostic push

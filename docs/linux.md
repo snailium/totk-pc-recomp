@@ -110,8 +110,8 @@ Acceptance for each item is a command that fails before and passes after.
 - [x] `tools/linux_compile_matrix.sh` — the scoreboard for the runtime port (66 of 70 sources compile clean; the
       other four need the generated `layout.h`/`romfs_config.h`)
 - [x] `runtime/third_party/vma/vk_mem_alloc.h` vendored (3.5.0, MIT) so the Vulkan files build without an MSYS2 package
-- [ ] `tools/build_xlate.py --rid linux-x64` publishes `totk_xlate` for Linux (NativeAOT) — still Windows-only;
-      without it the game starts and logs translation failures instead of shading
+- [x] `tools/build_xlate.py --rid linux-x64` publishes `totk_xlate` for Linux (NativeAOT); the translator path is
+      built with the platform separator and file name, so the game finds it next to `totk`
 - [ ] `tools/check_platform.py --root . --target linux` reports progress against the allowlist
 
 ### M1 — platform layer
@@ -139,7 +139,10 @@ Acceptance for each item is a command that fails before and passes after.
 - [ ] input: SDL events → the existing `input_map` key ids; gamepad/rumble already SDL3 (still the no-op stubs)
 - [ ] audio: SDL3 output already; `audren` host path unchanged
 - [ ] shader translator child process through `plat_child_*`; shader cache paths
-- [ ] title screen on `.101` (RADV, XTX) and on BC-250 Bazzite — blocked on a display with DRI3: `.101` has
+- [x] the renderer initialises on real hardware: with a headless Wayland compositor (`weston --backend=headless`)
+      the port picks the RX 7900 XTX through RADV, creates the device, mirrors its pools and builds the ASTC decoder
+- [ ] title screen on `.101` and on BC-250 Bazzite — a guest fault (`f_70011266c4`, reached from `nnMain`) stops the
+      boot just after HID init; it reproduces with `TOTK_ASYNC_PREEMPT=0` and needs a fault-address diagnosis — blocked on a display with DRI3: `.101` has
       no connected output and Xvfb has no DRI3, so the port boots with `
       vk: no usable Vulkan device` and stops at graphics init
 

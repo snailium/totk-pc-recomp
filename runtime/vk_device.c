@@ -49,8 +49,21 @@ static int layer_present(const char *name) {
 #endif
 
 static int create_instance(void) {
-    const char *ext[4] = {VK_KHR_SURFACE_EXTENSION_NAME, TOTK_VK_SURFACE_EXTENSION_NAME};
-    uint32_t n_ext = 2;
+    const char *ext[8] = {VK_KHR_SURFACE_EXTENSION_NAME};
+    uint32_t n_ext = 1;
+#if defined(_WIN32)
+    ext[n_ext++] = TOTK_VK_SURFACE_EXTENSION_NAME;
+#endif
+#if !defined(_WIN32)
+    // SDL knows which platform surface extension its current video driver needs (xcb under X11, wayland under Wayland);
+    // the two names above are only a fallback if SDL gives none.
+    uint32_t n_sdl = 0;
+    const char *const *sdl_ext = SDL_Vulkan_GetInstanceExtensions(&n_sdl);
+    if (sdl_ext && n_sdl) {
+        n_ext = 0;
+        for (uint32_t i = 0; i < n_sdl && n_ext < 6; i++) ext[n_ext++] = sdl_ext[i];
+    }
+#endif
     const char *layers[] = {"VK_LAYER_KHRONOS_validation"};
     int validate = cfg_bool("TOTK_VK_VALIDATION");
     if (validate && !layer_present(layers[0])) {

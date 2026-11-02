@@ -147,6 +147,18 @@ static void json_esc(char **o, const char *s) {
 
 // ---- paths and the translator identity
 
+// The translator's file name and the path separators of both hosts: the ini and the packaged folder may name either.
+#if defined(_WIN32)
+#define XLATE_FILE "totk_xlate.exe"
+#else
+#define XLATE_FILE "totk_xlate"
+#endif
+
+static char *path_last_sep(char *p) {
+    char *a = strrchr(p, '/'), *b = strrchr(p, '\\');
+    return a > b ? a : b;
+}
+
 static int hex32(const char *h, uint8_t out[32]) {        // 64 hex digits, then nothing but white space
     for (int i = 0; i < 64; i++) {
         char c = h[i] >= 'A' && h[i] <= 'F' ? (char)(h[i] | 32) : h[i];
@@ -171,7 +183,7 @@ static void xlate_identity(void) {
     } else {
         char p[PATH_CAP + 8];
         strcpy(p, xlate_exe);
-        char *dot = strrchr(p, '.'), *sep = strrchr(p, '\\');
+        char *dot = strrchr(p, '.'), *sep = path_last_sep(p);
         if (dot && dot > sep) *dot = 0;
         strcat(p, ".id");
         uint64_t size = 0;
@@ -197,12 +209,12 @@ static BOOL CALLBACK init_paths(PINIT_ONCE once, PVOID param, PVOID *ctx) {
     (void)once, (void)param, (void)ctx;
     char exe[PATH_CAP], root[PATH_CAP] = "", exe_dir[PATH_CAP] = "";
     if (plat_exe_path(exe, sizeof exe)) {
-        char *last = strrchr(exe, '\\');
+        char *last = path_last_sep(exe);
         if (last) snprintf(exe_dir, sizeof exe_dir, "%.*s", (int)(last - exe), exe);
-        for (char *cut = strrchr(exe, '\\'); cut; cut = strrchr(exe, '\\')) {
+        for (char *cut = path_last_sep(exe); cut; cut = path_last_sep(exe)) {
             *cut = 0;
             char probe[PATH_CAP + 32];
-            snprintf(probe, sizeof probe, "%s\\build\\xlate\\totk_xlate.exe", exe);
+            snprintf(probe, sizeof probe, "%s/build/xlate/" XLATE_FILE, exe);
             if (file_exists(probe)) {
                 strcpy(root, exe);
                 break;
@@ -211,12 +223,12 @@ static BOOL CALLBACK init_paths(PINIT_ONCE once, PVOID param, PVOID *ctx) {
     }
     const char *xlate_cfg = cfg_get("TOTK_XLATE"), *cache_cfg = cfg_get("TOTK_SHADER_CACHE");
     char beside[PATH_CAP + 32];   // a packaged folder (tools/package_build.py) keeps the translator next to totk.exe
-    if (exe_dir[0]) snprintf(beside, sizeof beside, "%s\\totk_xlate.exe", exe_dir);
+    if (exe_dir[0]) snprintf(beside, sizeof beside, "%s/" XLATE_FILE, exe_dir);
     if (xlate_cfg && *xlate_cfg && strlen(xlate_cfg) < sizeof xlate_exe) strcpy(xlate_exe, xlate_cfg);
     else if (exe_dir[0] && file_exists(beside)) strcpy(xlate_exe, beside);
-    else if (root[0]) snprintf(xlate_exe, sizeof xlate_exe, "%s\\build\\xlate\\totk_xlate.exe", root);
+    else if (root[0]) snprintf(xlate_exe, sizeof xlate_exe, "%s/build/xlate/" XLATE_FILE, root);
     if (cache_cfg && *cache_cfg && strlen(cache_cfg) < sizeof cache_dir) strcpy(cache_dir, cache_cfg);
-    else if (exe_dir[0]) snprintf(cache_dir, sizeof cache_dir, "%s\\shader-cache", exe_dir);
+    else if (exe_dir[0]) snprintf(cache_dir, sizeof cache_dir, "%s/shader-cache", exe_dir);
     xlate_identity();
     use_preload_start();
     return TRUE;
