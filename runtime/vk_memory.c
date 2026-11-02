@@ -1234,8 +1234,21 @@ int vk_mem_mirror_probe(uint64_t addr) {
     return ((PoolRec *)sp.pool)->mstate == MS_ON;
 }
 
+// TOTK_MIRROR_WB=0: never write GPU results back into guest memory automatically. The writeback exists so guest code
+// that reads texture memory sees what the GPU wrote, but it lands under the write watch, so the port's own write looks
+// like a CPU write and every texture is uploaded again on the next frame (2.5 fps, 21k uploads in 150 s on the BC-250).
+static int mirror_wb(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("TOTK_MIRROR_WB");
+        on = !(v && *v == '0');
+    }
+    return on;
+}
+
 void vk_mem_gpu_wrote(const VkMemSpan *sp, uint64_t size) {
     PoolRec *r = sp->pool;
+    if (!mirror_wb()) return;
     if (!r || r->mstate != MS_ON || sp->buffer != r->mbuf || !size) return;
     range_add(&wbl, &nwbl, &cwbl, r, sp->offset, size);
 }
