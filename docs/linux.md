@@ -235,7 +235,11 @@ Acceptance for each item is a command that fails before and passes after.
       but write-protecting guest memory that Vulkan imports makes amdgpu reject the submission (`VK_ERROR_DEVICE_LOST`,
       "the CS has been rejected"), and the soft-dirty flavour, whose reset does work, needs its ranges raised past the
       6 GiB app pool before it tracks anything. The fix is a hybrid: trap flavour for the CPU-side reservations,
-      asynchronous (or no watch at all) for the pools Vulkan imports.
+      asynchronous (or no watch at all) for the pools Vulkan imports. `TOTK_WATCH=self` is the first step of that: the
+      freshness check then answers from the port's own stamps only and a texture nothing wrote reports no change, with a
+      2 MiB region filter first so an untouched texture costs one comparison per region rather than one per page.
+- [x] the window survives a compositor close request: KDE sends `SDL_EVENT_QUIT` when a client misses its pings (a slow
+      frame can cause that) and a guest cannot reopen a window, so the port logs it once and keeps the surface.
 - [ ] the frame rate is 2.5 fps and the loading screen never finishes because textures are re-uploaded every frame:
       21,504 uploads in 150 s, each with a new page generation. The mirror writeback writes GPU results into guest memory
       under the write watch, so the port's own writeback looks like a CPU write and every texture is decoded again.

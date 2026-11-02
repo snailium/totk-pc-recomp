@@ -663,13 +663,20 @@ static int watch_self(void) {
 int vk_mem_changed(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now) {
     if (!size) { *now = since; return 0; }
     if (watch_self()) {
+        // Region first: reg_max is the newest stamp in each 2 MiB region, so an untouched texture costs one comparison
+        // per region instead of one per page (a 2048x4096 texture is 8192 pages).
         uint64_t lo = addr & ~0xfffull, hi = (addr + size + 0xfff) & ~0xfffull;
         AcquireSRWLockExclusive(&gen_lock);
         uint32_t g = ++gen_now;
         int changed = 0;
-        for (uint64_t a = lo; a < hi && !changed; a += 1ull << GEN_PAGE_SHIFT) {
-            uint32_t *st = gen_slot(a, 0);
-            if (st && *st > since) changed = 1;
+        for (uint64_t r = lo >> REG_SHIFT; r <= (hi - 1) >> REG_SHIFT && !changed; r++) {
+            if (reg_max[r] <= since) continue;
+            uint64_t a = (r << REG_SHIFT) > lo ? (r << REG_SHIFT) : lo;
+            uint64_t b = ((r + 1) << REG_SHIFT) < hi ? ((r + 1) << REG_SHIFT) : hi;
+            for (; a < b && !changed; a += 1ull << GEN_PAGE_SHIFT) {
+                uint32_t *st = gen_slot(a, 0);
+                if (st && *st > since) changed = 1;
+            }
         }
         ReleaseSRWLockExclusive(&gen_lock);
         *now = g;
