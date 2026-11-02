@@ -246,6 +246,11 @@ Acceptance for each item is a command that fails before and passes after.
       GTK's icon loader (`gtkiconhelper.c: ensure_surface_for_gicon`, the `image-missing.svg` loader under `bwrap`), which
       `libdecor`'s GTK plugin pulls in when SDL creates the Wayland window. On Bazzite the same binary creates its window
       and presents. Either drop libdecor from that container or run the XTX comparison outside it.
+- [x] the replay's 16 ms per submission is mostly the mirror upload: the dirty census prints `submits_per_frame 1.00`
+      with `eager_mib 24.496/29.781/51.809`, about 106 MiB uploaded per submit, because the mirror's own dirty test
+      (`page_dirty`) still falls back to `mem_written_peek` on the OS write watch, whose bits never clear on Linux. The
+      texture path stopped paying that when `TOTK_WATCH=self` became the default; the mirror cannot, because a CPU write
+      into a pool is exactly what the upload is for and the port has no other way to learn about it.
 - [x] where the guest's own CPU goes: with `TOTK_SVC_LOG=1` the supervisor-call histogram over 60 frames is dominated by
       `0x0b` (SleepThread, about 680 a frame) with `0x34`/`0x35` next at about 155 each and the lock pair
       `0x1a`/`0x1b` at about 55, which is the guest's own spin-and-yield pattern; the runtime calls are cheap, the cost is
