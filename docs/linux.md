@@ -222,6 +222,12 @@ Acceptance for each item is a command that fails before and passes after.
       `oe_push_message(OE_MSG_FOCUS_STATE_CHANGED)` at window start. On its own it does not unblock the boot, because
       `oe_push_message` only appends to the runtime's applet queue; it signals no event, and the guest waits on the
       event its own `nn::os::CreateSystemEvent` made with no timeout at all.
+- [x] with the applet event signalled, the wait moves and the next blocker names itself: the main thread (0x1001) joins
+      thread 0x1004, and 0x1004 sits inside `nvn:nvnQueueSubmitCommands`, blocked on a process-wide key at an alias-region
+      address (`0x33312120`), while the main thread waits in `InternalCriticalSectionImplByHorizon::Enter`. The NVN replay
+      calls back into guest code (the command buffer memory callbacks), and that callback path deadlocks against the guest
+      lock the main thread wants. This is the next thing to fix: the replay must not enter guest callbacks while the
+      submitting thread holds, or needs, a guest lock.
 - [ ] reaching a frame from there needs the peer's behaviour, not just the signal: the event is the applet/system
       message channel (the guest creates it with `nn::os::CreateSystemEvent` in inter-process mode), whose peer on a
       console writes a message into shared memory and then signals. Signalling alone advances one step and the boot
