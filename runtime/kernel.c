@@ -2048,6 +2048,10 @@ void kern_event_signal(uint32_t hw) {
     lock();
     Event *e = h_peek(hw, O_EVENT_W);
     if (!e) rt_fatal("kern_event_signal: %#x is not a writable event handle", hw);
+    if (ev_log()) {
+        char d[96];
+        rt_logf("event: host signal %#x (caller %s)\n", hw, ldr_describe((uint64_t)(uintptr_t)__builtin_return_address(0), d, sizeof d));
+    }
     e->signaled = 1;
     wake_sync_waiters();
     unlock();
