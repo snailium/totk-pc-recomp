@@ -1817,7 +1817,17 @@ static int pipe_memo_on(void) {
 }
 
 // Pass, shaders, pipeline, fixed state and resources for a draw. 0: the draw is skipped.
+static int shader_wait_log(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("TOTK_NVN_SUBMIT_LOG");
+        on = v && *v == '1';
+    }
+    return on;
+}
+
 static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
+    if (shader_wait_log()) rt_log("vk: draw: prepare");
     if (ex->render_disabled) return 0;
     cb_res(ex);
     dummies_init();
@@ -1832,6 +1842,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     VkRect2D sc = vk_exec_scissor(ex);
     if (!sc.extent.width || !sc.extent.height) return 0;
     if (!ex->prog) return warn_once(W_PROGRAM, "a draw without a bound program is skipped"), 0;
+    if (shader_wait_log()) rt_log("vk: draw: program %llu", (unsigned long long)ex->prog->serial);
     int has_vs, has_fs, vs_wait = 0, fs_wait = 0, memo = shader_memo_on();
     const GfxShader *vs, *fs;
     uint32_t gen = memo ? vk_texture_slots_gen() : 0;   // before shader_for, whose lookups may bump it
@@ -1845,8 +1856,11 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         }
     } else {
         SM.valid = 0;
+        if (shader_wait_log()) rt_log("vk: draw: shader_for VS");
         vs = shader_for(ex, NVN_STAGE_VS, &has_vs, &vs_wait, 0);
+        if (shader_wait_log()) rt_log("vk: draw: shader_for FS (vs_wait %d)", vs_wait);
         fs = shader_for(ex, NVN_STAGE_FS, &has_fs, &fs_wait, 0);
+        if (shader_wait_log()) rt_log("vk: draw: shaders resolved (fs_wait %d)", fs_wait);
         if (memo && vs && !vs_wait && !fs_wait && (!has_fs || fs))
             memo_key(ex, gen, &SM.k), SM.vs = vs, SM.fs = fs, SM.has_fs = has_fs, SM.valid = 1;
     }

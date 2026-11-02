@@ -71,6 +71,12 @@ static int memcb_enabled(void) {
 }
 
 static void memory_event(Cpu *c, cmd_t *o, int event, uint64_t min) {
+    if (getenv("TOTK_NVN_SUBMIT_LOG")) {
+        static volatile long once;
+        if (InterlockedIncrement(&once) <= 4)
+            rt_log("nvn: memory callback %s (event %d, %llu bytes, callback %p)", memcb_enabled() ? "enter" : "suppressed",
+                   event, (unsigned long long)min, o->cb);
+    }
     if (!memcb_enabled()) return;
     if (!o->cb || (cb_disabled(o) & (event == NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_COMMAND_MEMORY ? CB_NO_COMMAND
                                                                                                      : CB_NO_CONTROL)))

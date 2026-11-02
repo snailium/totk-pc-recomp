@@ -647,10 +647,20 @@ static void maybe_split(VkExec *ex) {
     n_parts++;
 }
 
+static int op_log(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("TOTK_NVN_SUBMIT_LOG");
+        on = v && *v == '1';
+    }
+    return on;
+}
+
 static void walk(VkExec *ex, const op_hdr *h, int depth) {
     for (;;) {
         if (h->size < sizeof *h || (h->size & 7) || h->op >= OP_COUNT_)
             rt_fatal("vk: corrupt command record at %p: op %u size %u", (const void *)h, h->op, h->size);
+        if (op_log()) rt_log("vk: op %s", nvn_op_name(h->op));
         const void *a = nvn_op_payload(h);
         switch (h->op) {
         case OP_END: return;

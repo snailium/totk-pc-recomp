@@ -179,13 +179,8 @@ const RtConfig *rt_config(void) { return &cfg; }
 volatile int g_fnprof = 0;
 volatile int g_lastcall = 0;
 
-// TOTK_LASTCALLS=1: the last calls of each thread, for the crash report. A guest bug deep in an SDK routine shows up
-// as a fault in a leaf function whose stack frame chain is already broken; the call ring still names the path.
-typedef struct { uint64_t addr, lr, x0; } LastCall;
-enum { LASTCALL_MAX = 512 };
-static __thread LastCall lc_ring[LASTCALL_MAX];
-static __thread unsigned lc_pos;
-
+// TOTK_LASTCALLS=1: the last lifted calls of each thread. The ring lives in the kernel (kern_note_call) so that the
+// SIGQUIT dump can print it for any blocked thread, not only for the thread that takes the signal.
 __attribute__((constructor)) static void lastcall_start(void) {
     const char *v = getenv("TOTK_LASTCALLS");
     if (v && *v == '1') g_lastcall = 1;
@@ -196,21 +191,14 @@ void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0) {
     // The memcpy/memset family is entered by tail call, so its x30 holds data rather than a return address; only
     // entries whose caller is lifted code are interesting, and that keeps the ring from filling with copy loops.
     if (lr < 0x7000000000ull || lr >= 0x7006000000ull) return;
-    LastCall *e = &lc_ring[lc_pos++ % LASTCALL_MAX];
-    e->addr = addr, e->lr = lr, e->x0 = x0;
+    extern void kern_note_call(uint64_t addr, uint64_t lr, uint64_t x0);
+    kern_note_call(addr, lr, x0);
 }
 
 void rt_lastcalls_dump(int n) {
     if (!g_lastcall || !n) return;
-    char d[160];
-    if ((unsigned)n > LASTCALL_MAX) n = LASTCALL_MAX;
-    rt_logf("  last %d guest calls:\n", n);
-    for (int i = 1; i <= n; i++) {
-        const LastCall *e = &lc_ring[(lc_pos + LASTCALL_MAX - (unsigned)i) % LASTCALL_MAX];
-        if (!e->addr) break;
-        rt_logf("    %2d %s  from %s  x0=%#llx\n", i, ldr_describe(e->addr, d, sizeof d),
-                ldr_describe(e->lr, d + 80, sizeof d - 80), (unsigned long long)e->x0);
-    }
+    extern void kern_dump_calls(int n);
+    kern_dump_calls(n);
 }
 
 void rt_lastcalls_start(void) { g_lastcall = 1; }

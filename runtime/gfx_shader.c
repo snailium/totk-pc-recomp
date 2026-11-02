@@ -272,8 +272,18 @@ static int child_start(Svc *v) {
 }
 
 // One line out, one line in (no newline in the reply). 0 when the pipe broke.
+static int xlog(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("TOTK_NVN_SUBMIT_LOG");
+        on = e && *e == '1';
+    }
+    return on;
+}
+
 static int child_exchange_raw(Svc *v, const char *line, char *reply, size_t reply_size) {
     if (!v->child && !child_start(v)) return 0;
+    if (xlog()) rt_log("gfx_shader: child ready, request %zu bytes", strlen(line));
     InterlockedIncrement64(&n_requests);
     size_t n = strlen(line);
     if (!plat_child_write(v->child, line, n)) return 0;
@@ -290,7 +300,9 @@ static int child_exchange_raw(Svc *v, const char *line, char *reply, size_t repl
             return 1;
         }
         if (v->in_len == sizeof v->inbuf) v->in_len = 0;  // an overlong line: drop it, wait for its end
+        if (xlog()) rt_log("gfx_shader: waiting for the reply (%zu bytes so far)", v->in_len);
         long got = plat_child_read(v->child, v->inbuf + v->in_len, sizeof v->inbuf - v->in_len);
+        if (xlog()) rt_log("gfx_shader: read %ld bytes", got);
         if (got <= 0) return 0;
         v->in_len += (size_t)got;
     }
@@ -335,6 +347,9 @@ static Svc *svc_get(void) {
         }
         if (!v && empty && svc_used() < S.limit) v = empty;
         if (v) break;
+        static int logged;
+        if (!logged++) rt_log("gfx_shader: waiting for a translator slot (used %d, limit %d, MAX_SVC %d)", svc_used(),
+                              S.limit, MAX_SVC);
         SleepConditionVariableSRW(&S.freed, &S.lock, INFINITE, 0);
     }
     v->busy = 1;
@@ -391,6 +406,9 @@ static void flight_enter(const uint8_t id[32]) {
         int busy = F.n == 2 * MAX_SVC;
         for (int i = 0; i < F.n && !busy; i++) busy = !memcmp(F.id[i], id, 32);
         if (!busy) break;
+        static int logged;
+        if (!logged++) rt_log("gfx_shader: waiting for an in-flight translation of %02x%02x%02x%02x (n=%d)", id[0], id[1],
+                              id[2], id[3], F.n);
         SleepConditionVariableSRW(&F.done, &F.lock, INFINITE, 0);
     }
     memcpy(F.id[F.n++], id, 32);

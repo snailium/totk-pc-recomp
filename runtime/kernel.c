@@ -103,6 +103,11 @@ struct RtThread {
     uint64_t ap_last;          // the last redirect attempt on this owner
     int ap_pending;            // redirected to kern_ap_stub, which has not reached kern_ap_yield yet
     const char *last_host;     // the host function the thread is in now (SIGQUIT dump), NULL when in lifted code
+    // TOTK_LASTCALLS: the last lifted functions this thread entered. In the kernel rather than in main.c's thread-local
+    // storage so that the SIGQUIT dump can print the ring of every blocked thread, not only of the one signalled.
+    struct { uint64_t addr, lr, x0; } lc[64];
+    unsigned lc_pos;
+    uint64_t host_since;       // when that host call was entered (watchdog)
     // TOTK_CORE_DIAG (holding G, except dg_host_end, which only the thread itself writes)
     uint64_t dg_since;         // as a waiter: core wait start
     int dg_cls;                // as a waiter: DG_* class at the start of the wait
@@ -127,6 +132,7 @@ static uint64_t g_main_stack;
 static void lock(void) { AcquireSRWLockExclusive(&G); }
 static void poke_start(void);
 static int sync_log(void);
+static void host_watchdog_start(void);
 static void unlock(void) { ReleaseSRWLockExclusive(&G); }
 
 uint64_t kern_now_ns(void) { return plat_now_ns(); }
@@ -1464,6 +1470,7 @@ uint64_t kern_threads_created(void) {
 Cpu *kern_cpu(void) { return tcur ? tcur->cur : NULL; }
 
 uint32_t kern_main_thread(Cpu **cpu) {
+    host_watchdog_start();
     if (tcur) {
         if (!tcur->is_main) rt_fatal("kern_main_thread on guest thread %#x, not the main thread", tcur->handle);
         *cpu = tcur->cpu;
@@ -2311,8 +2318,71 @@ void kern_applet_message_signalled(void) {
 // SIGQUIT (platform/linux/win32_compat.c): where every guest thread is, for a hang. Lock-free on purpose: a dump takes
 // the signal stack of whatever thread asked, and the kernel lock may be held by the very thread being reported.
 // hostfn.c: what a thread is doing, for the SIGQUIT dump. A pointer to a static name, so no formatting here.
+void kern_note_call(uint64_t addr, uint64_t lr, uint64_t x0) {
+    if (!tcur) return;
+    tcur->lc[tcur->lc_pos++ % 64] = (typeof(tcur->lc[0])){addr, lr, x0};
+}
+
+// The calling thread's ring, newest first, as one line per call.
+void kern_dump_calls(int n) {
+    if (!tcur) return;
+    char d[160];
+    unsigned pos = __atomic_load_n(&tcur->lc_pos, __ATOMIC_RELAXED);
+    if ((unsigned)n > 64) n = 64;
+    rt_logf("  last %d guest calls:", n);
+    for (int i = 1; i <= n; i++) {
+        unsigned k = (pos + 64 - (unsigned)i) % 64;
+        if (!tcur->lc[k].addr) break;
+        rt_logf("    %2d %s  from %s  x0=%#llx", i, ldr_describe(tcur->lc[k].addr, d, sizeof d),
+                ldr_describe(tcur->lc[k].lr, d + 80, sizeof d - 80), (unsigned long long)tcur->lc[k].x0);
+    }
+}
+
 void kern_note_host(const char *name) {
-    if (tcur) __atomic_store_n(&tcur->last_host, name, __ATOMIC_RELAXED);
+    if (!tcur) return;
+    __atomic_store_n(&tcur->last_host, name, __ATOMIC_RELAXED);
+    __atomic_store_n(&tcur->host_since, name ? kern_now_ns() : 0, __ATOMIC_RELAXED);
+}
+
+// A host call that never returns parks its guest thread inside a host function, where the thread dump cannot see it: it
+// reports the guest pc (the host-function stub) and a stale wait object. This watchdog names the call and how long it has
+// been running, once per slow call, so a deadlock inside the runtime points at its own frame.
+static DWORD WINAPI host_watchdog(void *arg) {
+    (void)arg;
+    static const uint64_t LIMIT_NS = 3000000000ull;
+    for (;;) {
+        Sleep(1000);
+        struct { uint32_t h; const char *name; uint64_t dt, pc; } hit[4];
+        int n = 0;
+        // Snapshot under the lock, log outside it: the log takes its own lock and a guest thread may hold it while it
+        // waits for the kernel lock.
+        lock();
+        for (RtThread *t = g_all; t && n < 4; t = t->all) {
+            int d = __atomic_load_n(&t->host_depth, __ATOMIC_RELAXED);
+            const char *h = __atomic_load_n(&t->last_host, __ATOMIC_RELAXED);
+            uint64_t since = __atomic_load_n(&t->host_since, __ATOMIC_RELAXED);
+            if (d <= 0 || !h || !since) continue;
+            uint64_t dt = kern_now_ns() - since;
+            if (dt < LIMIT_NS || t->dg_host_end == since) continue;
+            t->dg_host_end = since;
+            hit[n].h = t->handle, hit[n].name = h, hit[n].dt = dt, hit[n].pc = t->cur ? t->cur->pc : 0;
+            n++;
+        }
+        unlock();
+        for (int i = 0; i < n; i++) {
+            char dsc[128];
+            rt_logf("kernel: host call %s in thread %#x has not returned for %.1f s (guest pc %s)", hit[i].name, hit[i].h,
+                    (double)hit[i].dt / 1e9, ldr_describe(hit[i].pc, dsc, sizeof dsc));
+        }
+    }
+    return 0;
+}
+
+static void host_watchdog_start(void) {
+    static int started;
+    if (started) return;
+    started = 1;
+    CreateThread(NULL, 0, host_watchdog, NULL, 0, NULL);
 }
 
 void kern_dump_threads(const char *why) {
@@ -2330,6 +2400,17 @@ void kern_dump_threads(const char *why) {
         dprintf(2, "  %x prio %d core %d depth %d %s%s%s%s\n", t->handle, t->prio, t->cur_core, depth,
                 c ? ldr_describe(c->pc, d, sizeof d) : "no cpu",
                 h ? " in " : "", h ? h : "", t->cur_core < 0 ? " (blocked)" : "");
+        if (t->cur_core < 0 && t->lc_pos) {
+            char cd[160];
+            unsigned pos = __atomic_load_n(&t->lc_pos, __ATOMIC_RELAXED);
+            for (int i = 1, shown = 0; i <= 6; i++) {
+                unsigned k = (pos + 64 - (unsigned)i) % 64;
+                if (!t->lc[k].addr) break;
+                dprintf(2, "      call %d %s from %s\n", i, ldr_describe(t->lc[k].addr, cd, sizeof cd),
+                        ldr_describe(t->lc[k].lr, cd + 80, sizeof cd - 80));
+                shown++;
+            }
+        }
         if (t->cur_core < 0) {
             static const char *kinds[] = {"free", "thread", "event-read", "event-write", "session", "tmem"};
             uint64_t w = t->wobj, h = w & 0xffffffffu;

@@ -588,6 +588,17 @@ static uint64_t lod_entered, lod_issued, lod_fence[LOD_RING];
 // core given up (section 2.2), or queued for the replay thread (TOTK_REPLAY_ASYNC, vk_backend.c); the newest fence
 // value is what QueueFenceSync records. With the queue the fence covers replay and GPU, so the LOD guard below waits
 // for both.
+// TOTK_NVN_SUBMIT_LOG=1: name the phase a submission is in, so a thread parked inside this function can be attributed to
+// prepare, the backend submit, or a guest callback.
+static int submit_log(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("TOTK_NVN_SUBMIT_LOG");
+        on = v && *v == '1';
+    }
+    return on;
+}
+
 NVN_API(nvnQueueSubmitCommands) {
     queue_t *q = arg_p(c, 0);
     int n = (int)arg_x(c, 1);
@@ -608,8 +619,11 @@ NVN_API(nvnQueueSubmitCommands) {
         ReleaseSRWLockExclusive(&submit_lock);
         if (hs != local) free(hs);
     } else {
+        if (submit_log()) rt_log("nvn: submit %d handles: prepare", n);
         nvn_submit_prepare(h, n);
+        if (submit_log()) rt_log("nvn: submit %d handles: backend", n);
         f = gfx_backend()->submit(h, n);
+        if (submit_log()) rt_log("nvn: submit %d handles: done", n);
     }
     uint64_t prev = __atomic_load_n(&last_fence, __ATOMIC_RELAXED);
     while (f > prev && !__atomic_compare_exchange_n(&last_fence, &prev, f, 1, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {}

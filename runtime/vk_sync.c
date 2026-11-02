@@ -324,6 +324,17 @@ uint64_t vk_sync_reserve(void) {
     return v;
 }
 
+// TOTK_NVN_SUBMIT_LOG=1: name the step a submission is in; a submission that never returns has to be attributed to one
+// of them (slot, recording, uploads, the queue lock, or vkQueueSubmit2 itself).
+static int sublog(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("TOTK_NVN_SUBMIT_LOG");
+        on = v && *v == '1';
+    }
+    return on;
+}
+
 uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     vk_sync_start();
     VkCtx *c = vk_ctx();
@@ -331,7 +342,9 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     vk_mem_dirty_submit();   // TOTK_TRACE=perf: what a mirror would upload before this submit
     uint64_t fence = __atomic_load_n(&issued, __ATOMIC_ACQUIRE) + 1;
     cur_fence = fence;
+    if (sublog()) rt_log("vk: submit %llu: taking a slot", (unsigned long long)fence);
     CmdSlot *s = take_slot(c, fence);
+    if (sublog()) rt_log("vk: submit %llu: slot taken", (unsigned long long)fence);
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     uint64_t t0 = perf_begin();
@@ -346,7 +359,9 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     vkEndCommandBuffer(s->cb);
     perf_replay(t0);
     // After the recording: the uploads it asked for (and every earlier one) precede it in queue order.
+    if (sublog()) rt_log("vk: submit %llu: recorded", (unsigned long long)fence);
     vk_upload_flush(0);
+    if (sublog()) rt_log("vk: submit %llu: uploads flushed", (unsigned long long)fence);
     VkCommandBuffer pro = prologue(c, fence);
     s = &slots[cur_slot];
     VkCommandBufferSubmitInfo cbi[2] = {{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = pro},
@@ -357,9 +372,12 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
                         .commandBufferInfoCount = (pro ? 1u : 0u) + (recorded ? 1u : 0u),
                         .pCommandBufferInfos = pro ? cbi : cbi + 1, .signalSemaphoreInfoCount = 1,
                         .pSignalSemaphoreInfos = &sig};
+    if (sublog()) rt_log("vk: submit %llu: queue lock", (unsigned long long)fence);
     vk_queue_lock();
+    if (sublog()) rt_log("vk: submit %llu: vkQueueSubmit2", (unsigned long long)fence);
     VkResult r = vkQueueSubmit2(c->gfx_queue, 1, &si, VK_NULL_HANDLE);
     vk_queue_unlock();
+    if (sublog()) rt_log("vk: submit %llu: returned %d", (unsigned long long)fence, (int)r);
     if (r != VK_SUCCESS) rt_fatal("vk: vkQueueSubmit2 of value %llu failed (%d)", (unsigned long long)fence, (int)r);
     s->fence = recorded ? fence : 0;
     vk_mem_note_submit(fence);
@@ -370,6 +388,7 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     static unsigned subs;
     if (++subs % 4096 == 0) rec_stats_log();
     ReleaseSRWLockExclusive(&sub_lock);
+    if (sublog()) rt_log("vk: submit %llu: done", (unsigned long long)fence);
     return fence;
 }
 

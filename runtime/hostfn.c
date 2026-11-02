@@ -138,6 +138,10 @@ __attribute__((noinline)) static void hostfn_tracked(Cpu *c, GuestFn fn) {
 out:;
     int n = *d - 1;
     __atomic_store_n(d, n, __ATOMIC_RELAXED);
+    if (!n) {
+        extern void kern_note_host(const char *name);
+        kern_note_host(NULL);
+    }
     if (!n && kern_preempt_pending(t)) kern_host_left(t);
 }
 
@@ -160,9 +164,11 @@ static void hostfn_entry(Cpu *c) {
         char lr[96];
         rt_log("host call %s from %s", s->name, ldr_describe(c->x[30] - 4, lr, sizeof lr));
     }
-    if (kern_host_track) {
+    // Only the outermost host call is recorded: a nested call (a host function entering guest code that calls another
+    // host function) overwrites it at the moment it returns, and the watchdog would then name the wrong function.
+    if (kern_host_track && c->thread) {
         extern void kern_note_host(const char *name);
-        kern_note_host(s->name);
+        if (kern_host_depth(c->thread) == 0) kern_note_host(s->name);
     }
     if (s->blocking) {
         hostfn_blocking(c, s->fn);
