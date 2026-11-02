@@ -264,6 +264,14 @@ Acceptance for each item is a command that fails before and passes after.
       16 ms twice, the GPU submit 10 ms twice and the present blit 25 ms, with the guest's own waits down to 7.6 ms on
       average. Asynchronous replay (`TOTK_REPLAY_ASYNC=1`) does not change it: the port is bound by the CPU work of
       recording the command stream, not by the thread it runs on.
+- [x] the BC-250 validation reached the title screen: the run presents the Zelda title art and menu (Continue, New Game,
+      Options, amiibo) through a real Wayland window at 12.5-12.6 fps, with the art animating between captures. The
+      captures stay outside the repository, like the game data.
+- [x] the 40-CU question, answered from the hardware's own registers on `.144` (`umr -O bits -r
+      cyan_skillfish.gfx1013.mm<name>`): `CC_GC_SHADER_ARRAY_CONFIG = 0xffe00000` with `INACTIVE_WGPS[16:31] = 0xffe0`
+      (eleven WGPs harvested), `GC_USER_SHADER_ARRAY_CONFIG = 0` (no user override), and
+      `SPI_PG_ENABLE_STATIC_WGP_MASK = 0x0000001f` (five WGPs enabled statically). The driver's `active_cu_number 24` is
+      that harvest, so the GPU unlock is not in this firmware's registers even though the CPU one is.
 - [x] the BC-250 environment, checked: `lscpu` reports 8 cores and 16 threads (the CPU unlock is applied), and the
       kernel's `amdgpu` line reports `SE 2, SH per SE 2, CU per SH 10, active_cu_number 24`: 24 compute units, not the 40
       the unlocked board is expected to have. The GPU unlock is not in effect on this machine.
