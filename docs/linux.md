@@ -217,6 +217,22 @@ page written": slower, never stale.
 - [ ] Steam Machine: SteamOS, RX 9070, gamepad — same, plus overlay/menu check
 - [ ] CI: build the Linux ELF and run `--selftest` (no game files needed)
 
+## Debugging notes
+
+- `TOTK_LASTCALLS=1` keeps the last 512 lifted-code calls of each thread and both crash reporters print the newest 32
+  with their arguments; a guest fault in a leaf routine has no usable frame chain and this ring still names the path.
+- `TOTK_LOGHOSTRET=1` logs the x0 a host call leaves, which separates "a host function returned NULL" from "guest state
+  was never initialised".
+- The Windows build is a usable oracle: Wine 11's Wayland driver runs it on the real GPU in a container with a headless
+  Weston (`--security-opt seccomp=unconfined --device /dev/dri`), boots in seconds rather than the minutes llvmpipe
+  needs, and its host-call trace diffs cleanly against the port's. After `hid: controllers initialized` the two agree
+  for 98 calls; Windows then calls `nn::os::AllocateAddressRegion`.
+- gdb needs `--cap-add=SYS_PTRACE` to attach inside a container. The lifted code has no frame pointers, so its
+  backtraces stop at the host frame; the runtime's own tracing is the useful tool there.
+- Background runs started with `&`/nohup survive the shell and share the profile directory and the GPU — check
+  `pgrep -x totk` before a run. `pkill -f <path>` also matches the shell running it (its command line holds the path),
+  so use `pkill -x totk`.
+
 ## Non-goals
 
 - No Wine/Proton shim in the native path.
