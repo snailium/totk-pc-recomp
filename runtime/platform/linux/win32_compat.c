@@ -13,11 +13,18 @@ static void watch_install(void);
 __attribute__((constructor)) static void compat_early(void) { watch_install(); }
 
 void kern_guest_crash_report(const char *why, uint64_t addr);   // kernel.c: logs the guest stack of a fatal fault
+void rt_logf(const char *fmt, ...);   // host.h: the runtime log
 
 #include <dirent.h>
 #include <dlfcn.h>
 #include <sched.h>
 #include <stdarg.h>
+#include <sys/ioctl.h>
+
+#if defined(__linux__)
+#include <linux/fs.h>          // PAGEMAP_SCAN, PAGE_IS_WRITTEN
+#include <linux/userfaultfd.h> // UFFD_FEATURE_WP_ASYNC, UFFDIO_*
+#endif
 #include <strings.h>
 #include <sys/statvfs.h>
 #include <sys/wait.h>
@@ -743,6 +750,77 @@ int _wcsicmp(const WCHAR *a, const WCHAR *b) {
 int _stricmp(const char *a, const char *b) { return strcasecmp(a, b); }
 int _strnicmp(const char *a, const char *b, size_t n) { return strncasecmp(a, b, n); }
 
+// ---- write watch through userfaultfd
+//
+// The kernel's own dirty-bit tracking, the same mechanism Wine uses: a range is write-protected asynchronously
+// (UFFD_FEATURE_WP_ASYNC) so writes never fault, and PAGEMAP_SCAN reads the pages marked written; scanning with
+// PM_SCAN_WP_MATCHING re-arms them. No faults, no traps, and the guest stack and GPU-imported pools stay writable.
+static int g_uffd = -1, g_pagemap = -1, g_uffd_watch;
+
+static int uffd_init(void) {
+    if (g_uffd_watch) return 1;
+    if (g_uffd < 0) {
+        g_uffd = (int)syscall(SYS_userfaultfd, O_CLOEXEC | O_NONBLOCK | UFFD_USER_MODE_ONLY);
+        if (g_uffd < 0) {
+            rt_logf("watch: userfaultfd unavailable (seccomp?); write watch reports untracked pages\n");
+            return 0;
+        }
+        struct uffdio_api api = {.api = UFFD_API, .features = UFFD_FEATURE_WP_ASYNC | UFFD_FEATURE_WP_UNPOPULATED};
+        if (ioctl(g_uffd, UFFDIO_API, &api)) {
+            api.features = UFFD_FEATURE_WP_ASYNC;
+            if (ioctl(g_uffd, UFFDIO_API, &api)) { close(g_uffd); g_uffd = -1; return 0; }
+        }
+        g_pagemap = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
+        if (g_pagemap < 0) { close(g_uffd); g_uffd = -1; return 0; }
+    }
+    g_uffd_watch = 1;
+    rt_logf("watch: userfaultfd write watch active (WP_ASYNC, kernel dirty bits)\n");
+    return 1;
+}
+
+static int uffd_watch(uintptr_t base, size_t n) {
+    struct uffdio_register reg = {.range = {base, n}, .mode = UFFDIO_REGISTER_MODE_WP};
+    if (ioctl(g_uffd, UFFDIO_REGISTER, &reg)) return 0;
+    struct uffdio_writeprotect wp = {.range = {base, n}, .mode = UFFDIO_WRITEPROTECT_MODE_WP};
+    if (ioctl(g_uffd, UFFDIO_WRITEPROTECT, &wp)) { ioctl(g_uffd, UFFDIO_UNREGISTER, &reg.range); return 0; }
+    return 1;
+}
+
+static void uffd_unwatch(uintptr_t base, size_t n) {
+    if (g_uffd_watch) {
+        struct uffdio_range r = {base, n};
+        ioctl(g_uffd, UFFDIO_UNREGISTER, &r);
+    }
+}
+
+// Pages of [base, base+size) written since the last reset, as 4 KiB addresses; (size_t)-1 when the scan fails.
+static size_t uffd_written(uintptr_t base, size_t size, uint64_t *pages, size_t max, int reset) {
+    struct page_region rgns[256];
+    uintptr_t addr = base, end = base + size;
+    size_t n = 0;
+    while (addr < end) {
+        struct pm_scan_arg arg = {0};
+        arg.size = sizeof arg;
+        arg.start = addr;
+        arg.end = end;
+        arg.vec = (uintptr_t)rgns;
+        arg.vec_len = sizeof rgns / sizeof *rgns;
+        arg.category_mask = PAGE_IS_WRITTEN;
+        arg.return_mask = PAGE_IS_WRITTEN;
+        arg.max_pages = (n < max ? max - n : 0);
+        if (reset) arg.flags |= PM_SCAN_WP_MATCHING;
+        int r = ioctl(g_pagemap, PAGEMAP_SCAN, &arg);
+        if (r < 0) return (size_t)-1;
+        if (!r) break;
+        for (int i = 0; i < r; i++)
+            for (uintptr_t a = rgns[i].start; a < rgns[i].end && n < max; a += 4096) pages[n++] = a;
+        if ((size_t)r < sizeof rgns / sizeof *rgns) break;
+        if ((uintptr_t)arg.walk_end <= addr) break;
+        addr = (uintptr_t)arg.walk_end;
+    }
+    return n;
+}
+
 // ---- memory: reservations, protection, and the write watch
 //
 // The watch is the mprotect trap flavour: watched pages are read-only, a write faults, the SIGSEGV handler records the
@@ -754,7 +832,8 @@ int _strnicmp(const char *a, const char *b, size_t n) { return strncasecmp(a, b,
 typedef struct {
     uintptr_t base;
     size_t size;
-    uint8_t *dirty;   // one byte per 4 KiB page
+    uint8_t *dirty;   // one byte per 4 KiB page (trap flavour only)
+    int kernel_tracked; // 1: userfaultfd tracks writes, so a fault here is a mapping fault, not a watch write
 } Watch;
 
 static Watch g_watch[WATCH_MAX];
@@ -820,9 +899,17 @@ static void watch_fault(int sig, siginfo_t *si, void *uc_) {
         signal(SIGSEGV, SIG_DFL);
         return;
     }
-    // A watched page: record the write and make the page writable until the next GetWriteWatch(RESET) protects it
-    // again. The vectored handlers are deliberately not consulted here: the runtime's crash reporter is one of them and
-    // would exit the process on what is a normal write-watch fault.
+    if (w->kernel_tracked) {
+        // userfaultfd records writes itself, so a fault inside a kernel-tracked range is a mapping fault (the alias
+        // region is reserved PROT_NONE and mapped on demand): the runtime's handlers must see it.
+        if (veh_dispatch(si, uc) == EXCEPTION_CONTINUE_EXECUTION) return;
+        kern_guest_crash_report("unhandled mapping fault", (uint64_t)(uintptr_t)si->si_addr);
+        signal(SIGSEGV, SIG_DFL);
+        return;
+    }
+    // Trap flavour: record the write and make the page writable until the next GetWriteWatch(RESET) protects it again.
+    // The vectored handlers are deliberately not consulted here: the runtime's crash reporter is one of them and would
+    // exit the process on what is a normal write-watch fault.
     size_t page = ((uintptr_t)si->si_addr - w->base) / 4096;
     if (page < w->size / 4096) __atomic_store_n(&w->dirty[page], 1, __ATOMIC_RELAXED);
     mprotect((void *)(w->base + page * 4096), 4096, PROT_READ | PROT_WRITE);
@@ -864,7 +951,10 @@ static void watch_after_commit(void *addr, size_t n) {
 }
 
 static void watch_register(void *base, size_t n) {
-    watch_install();
+    int kernel = uffd_init() && uffd_watch((uintptr_t)base, n);
+    if (!kernel) watch_install();
+    // The range is recorded either way: the fault path needs to know whether it owns the range (trap flavour) or
+    // whether the kernel does (then a fault there is a mapping fault, and the runtime's handlers must see it).
     pthread_mutex_lock(&g_watch_lock);
     for (int i = 0; i < WATCH_MAX; i++) {
         if (g_watch[i].dirty) continue;
@@ -873,6 +963,7 @@ static void watch_register(void *base, size_t n) {
         g_watch[i].base = (uintptr_t)base;
         g_watch[i].size = n;
         g_watch[i].dirty = bits;
+        g_watch[i].kernel_tracked = kernel;
         break;
     }
     pthread_mutex_unlock(&g_watch_lock);
@@ -895,6 +986,7 @@ void *VirtualAlloc(void *addr, SIZE_T size, DWORD type, DWORD prot) {
 
 BOOL VirtualFree(void *addr, SIZE_T size, DWORD type) {
     if (type & MEM_RELEASE) {
+        uffd_unwatch((uintptr_t)addr, page_up(size));
         pthread_mutex_lock(&g_watch_lock);
         for (int i = 0; i < WATCH_MAX; i++) {
             if (!g_watch[i].dirty || g_watch[i].base != (uintptr_t)addr) continue;
@@ -955,9 +1047,18 @@ SIZE_T VirtualQuery(const void *addr, MEMORY_BASIC_INFORMATION *mbi, SIZE_T len)
 }
 
 UINT GetWriteWatch(DWORD flags, void *base, SIZE_T size, void **pages, ULONG_PTR *count, DWORD *granularity) {
-    // Without a hardware dirty-bit source (userfaultfd) the trap flavour is not armed: pages are left writable, so
-    // nothing is ever recorded and the honest answer is "not tracked". Callers then treat every page as written,
-    // which is slow but never stale. See docs/linux.md, M4.
+    if (!count || !granularity || !pages) return 1;
+    if (g_uffd_watch) {
+        if (!watch_for((uintptr_t)base)) return 1;
+        size_t n = uffd_written((uintptr_t)base, size, (uint64_t *)(void *)pages, *count,
+                                (flags & WRITE_WATCH_FLAG_RESET) != 0);
+        if (n == (size_t)-1) return 1;
+        *count = n;
+        *granularity = 4096;
+        return 0;
+    }
+    // Without a dirty-bit source the honest answer is "not tracked": callers then treat every page as written, which
+    // is slow but never stale. See docs/linux.md, M4.
     if (!g_watch_traps) return 1;
     Watch *w = watch_for((uintptr_t)base);
     if (!w || !count || !granularity || !pages) return 1;

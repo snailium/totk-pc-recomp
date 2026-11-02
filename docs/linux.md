@@ -171,17 +171,24 @@ Acceptance for each item is a command that fails before and passes after.
 - **`CreateDirectoryW` must report `ERROR_ALREADY_EXISTS`**, not succeed silently: `ov_system.c`'s profile setup
   creates each path prefix and checks that code.
 
-### Write watch: armed only with userfaultfd
+### Write watch: userfaultfd, with the trap flavour as a fallback
 
-The trap flavour (mprotect `PROT_READ` + `SIGSEGV`) cannot be armed for the whole watched block: the block holds the
-guest stack and the pools the GPU imports, and `VK_EXT_external_memory_host` refuses read-only pages, so protecting
-everything at commit breaks both. Until the userfaultfd path lands (it needs `UFFD_FEATURE_WP_ASYNC`, which Docker's
-default seccomp policy blocks — the game must run in a container with `--security-opt seccomp=unconfined`, or on a
-native host), `GetWriteWatch` honestly reports "not tracked" and the graphics layer treats every page as written. That
-is slower but never stale. `g_watch_traps` in `win32_compat.c` is the switch the userfaultfd implementation flips.
+`win32_compat.c` now implements the kernel's dirty-bit tracking: `userfaultfd` with `UFFD_FEATURE_WP_ASYNC` registers
+each watched range write-protected asynchronously (writes never fault) and `PAGEMAP_SCAN`/`PAGE_IS_WRITTEN` reads the
+pages written since the last scan, `PM_SCAN_WP_MATCHING` re-arming them. That is the same mechanism Wine uses and it
+coexists with `VK_EXT_external_memory_host`, the guest stack and the alias region.
+
+The trap flavour (mprotect `PROT_READ` + `SIGSEGV`) stays as the fallback when userfaultfd cannot be opened. It must not
+be armed for the whole watched block — the block holds the guest stack and every GPU-imported pool, and read-only pages
+break both — so `g_watch_traps` stays 0 and `GetWriteWatch` reports the range as untracked, which callers treat as "every
+page written": slower, never stale.
+
+`userfaultfd` needs `--security-opt seccomp=unconfined` in Docker (the default profile blocks the syscall); the log line
+`watch: userfaultfd write watch active (WP_ASYNC, kernel dirty bits)` confirms which path is in use.
 
 ### M4 — memory semantics
-- [ ] write watch: userfaultfd path, soft-dirty fallback, trap fallback; logged at startup
+- [x] write watch: userfaultfd `WP_ASYNC` + `PAGEMAP_SCAN` path, logged at startup as
+      `watch: userfaultfd write watch active`; trap fallback stays disarmed (see above), soft-dirty still to do
 - [ ] preemption: `SIGUSR1` + `ucontext`; verify `TOTK_ASYNC_PREEMPT=0/1` both work
 - [ ] freeze/thaw: `mprotect` + `SIGSEGV`; alias page table unchanged
 - [ ] compare frame time with the Windows build on the same scene, same GPU
