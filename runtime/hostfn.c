@@ -160,6 +160,10 @@ static void hostfn_entry(Cpu *c) {
         char lr[96];
         rt_log("host call %s from %s", s->name, ldr_describe(c->x[30] - 4, lr, sizeof lr));
     }
+    if (kern_host_track) {
+        extern void kern_note_host(const char *name);
+        kern_note_host(s->name);
+    }
     if (s->blocking) {
         hostfn_blocking(c, s->fn);
         return;

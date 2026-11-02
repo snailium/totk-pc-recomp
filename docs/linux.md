@@ -235,6 +235,10 @@ page written": slower, never stale.
   for 98 calls; Windows then calls `nn::os::AllocateAddressRegion`.
 - gdb needs `--cap-add=SYS_PTRACE` to attach inside a container. The lifted code has no frame pointers, so its
   backtraces stop at the host frame; the runtime's own tracing is the useful tool there.
+- `kill -QUIT <pid>` prints every guest thread: handle, priority, core, host depth, the lifted function it is in, and
+  the host call it is inside (plus the wait state when it is blocked). This is what turned "the game stops after the
+  first vibration value" into "the main thread waits in `nn::os::detail::InterProcessEventImplByHorizon::Wait` on an
+  event nobody signals, 42 threads idle in `ReceiveLightMessageQueue`, five sleeping".
 - Background runs started with `&`/nohup survive the shell and share the profile directory and the GPU — check
   `pgrep -x totk` before a run. `pkill -f <path>` also matches the shell running it (its command line holds the path),
   so use `pkill -x totk`.

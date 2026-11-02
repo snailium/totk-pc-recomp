@@ -11,7 +11,22 @@
 
 static void watch_install(void);
 static void altstack_install(void);
-__attribute__((constructor)) static void compat_early(void) { watch_install(); altstack_install(); }
+void kern_dump_threads(const char *why);   // kernel.c: SIGQUIT prints every guest thread
+static void quit_handler(int sig) {
+    (void)sig;
+    kern_dump_threads("SIGQUIT");
+}
+
+static void install_quit_handler(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = quit_handler;
+    sa.sa_flags = SA_RESTART | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGQUIT, &sa, NULL);
+}
+
+__attribute__((constructor)) static void compat_early(void) { watch_install(); altstack_install(); install_quit_handler(); }
 
 void kern_guest_crash_report(const char *why, uint64_t addr);   // kernel.c: logs the guest stack of a fatal fault
 void rt_logf(const char *fmt, ...);   // host.h: the runtime log

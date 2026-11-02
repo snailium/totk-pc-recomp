@@ -19,6 +19,9 @@
 #include "host.h"
 #include "kernel.h"
 #include "platform/platform.h"
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 #define R_OK 0u
 #define R_TIMEOUT KERN_R_TIMEOUT
@@ -98,6 +101,7 @@ struct RtThread {
     uint64_t ap_rip;           // the interrupted host rip kern_ap_stub returns to
     uint64_t ap_last;          // the last redirect attempt on this owner
     int ap_pending;            // redirected to kern_ap_stub, which has not reached kern_ap_yield yet
+    const char *last_host;     // the host function the thread is in now (SIGQUIT dump), NULL when in lifted code
     // TOTK_CORE_DIAG (holding G, except dg_host_end, which only the thread itself writes)
     uint64_t dg_since;         // as a waiter: core wait start
     int dg_cls;                // as a waiter: DG_* class at the start of the wait
@@ -2217,6 +2221,35 @@ HOST_OVERRIDE(KERN_SYM_INITIALIZE_FIBER, kern_fiber_initialize);
 HOST_OVERRIDE(KERN_SYM_FINALIZE_FIBER, kern_fiber_finalize);
 HOST_OVERRIDE(KERN_SYM_SWITCH_TO_FIBER, kern_fiber_switch);
 HOST_OVERRIDE(KERN_SYM_GET_CURRENT_FIBER, kern_fiber_current);
+
+// SIGQUIT (platform/linux/win32_compat.c): where every guest thread is, for a hang. Lock-free on purpose: a dump takes
+// the signal stack of whatever thread asked, and the kernel lock may be held by the very thread being reported.
+// hostfn.c: what a thread is doing, for the SIGQUIT dump. A pointer to a static name, so no formatting here.
+void kern_note_host(const char *name) {
+    if (tcur) __atomic_store_n(&tcur->last_host, name, __ATOMIC_RELAXED);
+}
+
+void kern_dump_threads(const char *why) {
+    static volatile int busy;
+    if (__atomic_exchange_n(&busy, 1, __ATOMIC_ACQ_REL)) return;
+    char d[160];
+    // dprintf(2, ...) rather than rt_log: the dump runs in a signal handler, which may have interrupted the thread that
+    // holds the log mutex.
+    dprintf(2, "threads: %s\n", why);
+    int n = 0;
+    for (RtThread *t = g_all; t && n < 256; t = t->all, n++) {
+        Cpu *c = t->cur;
+        int depth = __atomic_load_n(&t->host_depth, __ATOMIC_RELAXED);
+        const char *h = depth > 0 ? __atomic_load_n(&t->last_host, __ATOMIC_RELAXED) : NULL;
+        dprintf(2, "  %x prio %d core %d depth %d %s%s%s%s\n", t->handle, t->prio, t->cur_core, depth,
+                c ? ldr_describe(c->pc, d, sizeof d) : "no cpu",
+                h ? " in " : "", h ? h : "", t->cur_core < 0 ? " (blocked)" : "");
+        if (t->cur_core < 0)
+            dprintf(2, "      wait st %d on %#llx waker %#x\n", t->st, (unsigned long long)t->wobj, t->waker);
+    }
+    dprintf(2, "threads: %d total\n", n);
+    __atomic_store_n(&busy, 0, __ATOMIC_RELEASE);
+}
 
 // A guest fault outside every range the host handles: print the guest stack so the failure names its function. Called
 // from the Linux SIGSEGV path (platform/linux/win32_compat.c) before the default action; Windows has the crash reporter
