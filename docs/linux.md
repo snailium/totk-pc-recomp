@@ -1,0 +1,134 @@
+# Linux port
+
+Goal: build `totk` as a native Linux ELF that runs without Wine or Proton, on Bazzite (BC-250, APU/gfx1013) and on
+SteamOS (self-built Steam Machine, RX 9070). Windows stays the reference build; the Linux path must not regress it.
+
+## Status
+
+- Windows is the only supported host today (`docs/building.md`). Linux and the Steam Deck are in the README's
+  *Planned* list.
+- The platform split exists but is unfinished: `runtime/platform/platform.h` declares the OS surface the runtime is
+  allowed to use, `runtime/platform/win32.c` is its only implementation, and `tools/check_platform.py` keeps an
+  allowlist of the files that still call Win32 directly. Those entries (tagged `2.7a` memory/flt/page tracking,
+  `2.7b` threads/time/locks/FP state) are the worklist.
+- `docs/architecture.md` says the Vulkan back end already "runs on Linux"; only windowing, input, the platform layer
+  and the build are Windows-bound today.
+
+## What the Proton experiment already proved (2026-10-31, `.101`)
+
+The Windows build was produced and run under Wine 11, which answers the questions a port would otherwise have to
+answer from scratch:
+
+| Question | Result |
+|---|---|
+| Do the fixed guest addresses work off Windows? | Yes — `--selftest` passed (3 modules, 301,848 functions, 22.5 M dispatch slots) |
+| Does `VK_EXT_external_memory_host` accept host pointers through a translation layer? | Yes — import, bind and map of an anonymous 1 MiB host buffer returned the written bytes (`RESULT: PASS`) |
+| Does the write-watch design survive a non-Windows page tracker? | Yes — Wine 11's `userfaultfd` path reports every written page; 256 MiB written + queried in **50 ms** (vs 280 ms through mprotect traps) |
+| Does the game boot off Windows? | Yes — 360 frames rendered on llvmpipe (no DRI3 in the headless container, so no GPU), ASTC on the compute path, GPL fast-link active |
+| What breaks a translation layer? | `ucrtbase.crealf` (Wine 10 stub) kills the lifter's numpy; fixed in Wine 11 |
+
+The last row is the argument for a native port: every one of those interactions is an emulation detail a native build
+does not have.
+
+## Where the seams are
+
+- `runtime/platform/platform.h` — 45 functions: threads, affinity, CPU count, monotonic time, sleep, mutex/cond,
+  memory commit/read, ~15 file calls, exe path, environment, UI language, thread id, font path, OS version, stderr
+  path, clipboard, open folder, `dlopen`, machine load (CPU/GPU/thermal/memory), child processes.
+- `runtime/platform/win32.c` — 684 lines, the reference implementation of all of it.
+- `runtime/platform/fp_x86.h` — MXCSR access, already arch-only, not OS-specific.
+- `tools/check_platform.py` — the allowlist of remaining direct Win32 users (41 files, ~1,575 call sites, probes
+  included). Excluding probes, the real runtime is ~30 files.
+
+## Porting inventory
+
+Counted from the runtime (probe files excluded where they only test):
+
+| Area | Representative calls | Replacement |
+|---|---|---|
+| Threads | `CreateThread`×34, `GetCurrentThreadId`×12, `SwitchToThread`×5 | `pthread_create`, `gettid`, `sched_yield` behind `plat_*` |
+| Time | `QueryPerformanceCounter`×17, `timeBeginPeriod` | `clock_gettime(CLOCK_MONOTONIC)` behind `plat_now_ns` |
+| Files | `CreateFileW`×15, `ReadFile`×26, `WriteFile`×9 | POSIX `open/read/write/pread` behind `plat_file_*` |
+| Memory | `VirtualAlloc`×7, `VirtualProtect`×8 | `mmap(MAP_FIXED_NOREPLACE)`, `mprotect` |
+| Write watch | `GetWriteWatch`×3, `MEM_WRITE_WATCH` | userfaultfd `WP_ASYNC` → soft-dirty → mprotect traps |
+| Preemption | `SuspendThread`×7, `SetThreadContext`×2, `GetThreadContext` | `SIGUSR1` + `ucontext` (RIP/RSP rewrite) |
+| Child processes | `CreateProcessW`×6 | `fork` + pipes + `execv` |
+| Window/input | `CreateWindowExW`, `GetMessageW`, `GetKeyboardState`, `SetCursor` | SDL3 (`SDL_Vulkan_CreateSurface`, SDL events); `input_map.c` is already platform-neutral |
+| Shell extras | clipboard, open folder, profiler, RenderDoc loader | `wl-copy`/`xclip`, `xdg-open`, optional |
+
+## The three hard parts
+
+1. **Write watch.** Three implementations, selected at startup and logged, because the fallback changes frame time by
+   an order of magnitude:
+   - `userfaultfd` with `UFFD_FEATURE_WP_ASYNC` + `PAGEMAP_SCAN`/`PAGE_IS_WRITTEN` (kernel 5.19+/6.8+, and
+     `UFFD_USER_MODE_ONLY` so `vm.unprivileged_userfaultfd=0` does not matter);
+   - soft-dirty via `/proc/self/clear_refs` + `/proc/self/pagemap` (slower, always available);
+   - mprotect + `SIGSEGV` traps (correct, worst).
+   Measured on `.101`: 50 ms vs 280 ms for 256 MiB of first writes, so the selection must be visible in the log.
+2. **Core preemption.** `SuspendThread`/`SetThreadContext` becomes `tgkill(SIGUSR1)`; the handler inspects
+   `ucontext`'s RIP, and when it is in lifted code at host depth 0 rewrites RIP/RSP to `kern_ap_stub` and returns.
+   The existing "two loads when nobody waits" fast path and `TOTK_ASYNC_PREEMPT=0` stay.
+3. **Page freeze/thaw.** `VirtualProtect(PAGE_READONLY)` + the vectored handler becomes `mprotect` + a `SIGSEGV`
+   handler that must distinguish the game's own aliasing faults from real bugs (the Windows VEH already has that
+   distinction; port the same rule).
+
+## Distribution
+
+- **glibc floor is the only real per-distribution constraint.** Build on the oldest target (Ubuntu 22.04 container,
+  glibc 2.35) or ship the Steam Linux Runtime; a binary built on Ubuntu 26.04 (glibc 2.43) will not start on older
+  SteamOS. Bazzite 44 and Ubuntu 26.04 both have the kernel and Mesa features the port needs.
+- **Immutable systems** (Bazzite, SteamOS): ship a portable folder — ELF, `lib/` with SDL3/opus/libvpx/zstd, `exefs/`,
+  `romfs/`, caches — the same shape as the Windows `package_build.py` output. No system package installs.
+- Both targets run Wayland (KDE on Bazzite, gamescope on SteamOS); SDL3 covers X11/Wayland and gamepad input.
+- Do not depend on distribution SDL3/Vulkan headers at run time; build against the understood versions and bundle.
+
+## TODO
+
+Acceptance for each item is a command that fails before and passes after.
+
+### M0 — scaffolding (this branch)
+- [x] `docs/linux.md` (this file) and the TODO list
+- [x] branch `linux-native`, no changes to Windows behaviour
+- [ ] `tools/build_game_linux` path: clang + ninja + pkg-config, ELF, no windres; `--target linux` in `build_game.py`
+      or a sibling script that emits the same object layout
+- [ ] `tools/build_xlate.py --rid linux-x64` publishes `totk_xlate` for Linux (NativeAOT)
+- [ ] `tools/check_platform.py --root . --target linux` reports progress against the allowlist
+
+### M1 — platform layer
+- [x] `runtime/platform/linux.c`: threads, affinity, CPU count, monotonic time, sleep, mutex/cond (zero-init valid),
+      memory commit/read, all `plat_file_*`, exe path, env, UI language, thread id, font path, OS version, stderr
+      path, clipboard, open folder, `dlopen`, machine load, child processes
+- [x] `tests/platform_test.c` exercising threads, cond, atomic write, append, child pipes, memory read
+- [x] the platform layer compiles clean with `-Wall -Wextra` under gcc, ASan run of the test (clang still to check in CI)
+
+### M2 — runtime off Win32
+- [ ] replace the direct Win32 calls of the ~30 runtime files with `plat_*` (files, threads first, they are mechanical)
+- [ ] memory: reservation with `MAP_FIXED_NOREPLACE`, commit with `mprotect`, re-exec loop via `execv`
+- [ ] loader: ELF-free (modules are already NSO→C); only `MAP_FIXED` and the dispatch table remain
+- [ ] `totk --selftest` passes as a Linux ELF against the 1.2.1 modules
+
+### M3 — window, input, audio, graphics
+- [ ] SDL3 window + `SDL_Vulkan_CreateSurface`; headers from `VK_KHR_xlib_surface`/`wayland_surface`
+- [ ] input: SDL events → the existing `input_map` key ids; gamepad/rumble already SDL3
+- [ ] audio: SDL3 output already; `audren` host path unchanged
+- [ ] shader translator child process through `plat_child_*`; shader cache paths
+- [ ] title screen on `.101` (RADV, XTX) and on BC-250 Bazzite
+
+### M4 — memory semantics
+- [ ] write watch: userfaultfd path, soft-dirty fallback, trap fallback; logged at startup
+- [ ] preemption: `SIGUSR1` + `ucontext`; verify `TOTK_ASYNC_PREEMPT=0/1` both work
+- [ ] freeze/thaw: `mprotect` + `SIGSEGV`; alias page table unchanged
+- [ ] compare frame time with the Windows build on the same scene, same GPU
+
+### M5 — packaging and targets
+- [ ] portable Linux folder (ELF + `lib/` + `exefs/` + `romfs/`), `totk.ini` defaults, desktop entry
+- [ ] glibc 2.35 build container; optional Steam Runtime manifest
+- [ ] BC-250: Bazzite, RADV gfx1013, 16 GB APU — boots to field, log shows the write-watch mode and the GPU
+- [ ] Steam Machine: SteamOS, RX 9070, gamepad — same, plus overlay/menu check
+- [ ] CI: build the Linux ELF and run `--selftest` (no game files needed)
+
+## Non-goals
+
+- No Wine/Proton shim in the native path.
+- No new upstream features (HDR, VRR, ultrawide) before the two targets run.
+- Windows behaviour must stay byte-for-byte buildable; `tools/check_content.py` rules still apply.
