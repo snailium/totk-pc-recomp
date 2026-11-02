@@ -66,10 +66,15 @@ static DWORD WINAPI present_main(void *arg) {
         uint64_t bt0 = waitstat_now();
         vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
         waitstat_add("blit total", waitstat_now() - bt0);
-        uint64_t f = vk_sync_submit(NULL, 0);   // a timeline value after the blit: deferred destruction waits for the blit too
-        if (j.value && f != j.value)
-            rt_fatal("vk: the present of frame %llu signalled %llu, queued as %llu", (unsigned long long)j.frame,
-                     (unsigned long long)f, (unsigned long long)j.value);
+        // Only the asynchronous replay queues timeline values through the present; in synchronous mode an empty submit
+        // just to advance the timeline costs a kernel submission (about 10 ms on the BC-250) per frame and orders
+        // nothing: deferred destruction only has to happen later, never earlier.
+        if (j.value) {
+            uint64_t f = vk_sync_submit(NULL, 0);   // a timeline value after the blit
+            if (f != j.value)
+                rt_fatal("vk: the present of frame %llu signalled %llu, queued as %llu", (unsigned long long)j.frame,
+                         (unsigned long long)f, (unsigned long long)j.value);
+        }
         waitstat_add("present job", waitstat_now() - jb0);
         AcquireSRWLockExclusive(&pl);
         busy = 0;

@@ -649,13 +649,19 @@ void vk_guest_written(uint64_t addr, uint64_t size) {
 }
 
 // TOTK_WATCH=self: decide freshness from the port's own stamps only (vk_guest_written, WriteTexels, GPU copies
-// reported at their fence) and never query the OS write watch. The kernel's dirty bits are the expensive and, on Linux,
-// unreliable part: PM_SCAN_WP_MATCHING leaves PAGE_IS_WRITTEN set, so a query reports the same pages for ever.
+// reported at their fence) and never query the OS write watch. On Windows GetWriteWatch is exact and cheap; on Linux the
+// kernel's dirty bits are neither: PM_SCAN_WP_MATCHING leaves PAGE_IS_WRITTEN set, so a query reports the same pages for
+// ever and every texture is uploaded again (4.3 fps against 12.5 with the stamps alone on the BC-250). The Linux default
+// is therefore the stamps; TOTK_WATCH=watch asks for the OS watch there.
 static int watch_self(void) {
     static int on = -1;
     if (on < 0) {
         const char *v = getenv("TOTK_WATCH");
+#ifdef _WIN32
         on = v && !strcmp(v, "self");
+#else
+        on = !(v && (!strcmp(v, "watch") || !strcmp(v, "0")));
+#endif
     }
     return on;
 }

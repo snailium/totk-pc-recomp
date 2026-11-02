@@ -246,6 +246,9 @@ Acceptance for each item is a command that fails before and passes after.
       GTK's icon loader (`gtkiconhelper.c: ensure_surface_for_gicon`, the `image-missing.svg` loader under `bwrap`), which
       `libdecor`'s GTK plugin pulls in when SDL creates the Wayland window. On Bazzite the same binary creates its window
       and presents. Either drop libdecor from that container or run the XTX comparison outside it.
+- [x] the default configuration is the fast one on Linux: the freshness check answers from the port's stamps
+      (`TOTK_WATCH=self`, now the default off Windows) and the mirror writeback stays on, which is 12.7 fps out of the box
+      against 4.3 with the OS write watch; `TOTK_WATCH=watch` asks for the OS watch again.
 - [x] the frame budget on the BC-250 after the wait profiler found the epoch reset: 13 fps, made up of replay recording
       16 ms twice, the GPU submit 10 ms twice and the present blit 25 ms, with the guest's own waits down to 7.6 ms on
       average. Asynchronous replay (`TOTK_REPLAY_ASYNC=1`) does not change it: the port is bound by the CPU work of
