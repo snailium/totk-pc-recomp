@@ -150,10 +150,12 @@ Acceptance for each item is a command that fails before and passes after.
 - [x] the RomFS overlay applies: `RomFS ready: 304473 files, 1 overlays` after `tools/make_romfs_patches.py` writes
       `romfs-patches/` next to the binary (the installer's prepare step does this on Windows)
 - [x] async preemption dispatches interrupts (`kernel: interrupt 0x1009 p47 ...`), as on Windows
-- [ ] title screen on `.101` and on BC-250 Bazzite — the boot now goes past the old NULL and stops later, at
-      `f_70007bfa94` with `si_addr = 0x737265cc` (ASCII "srec"/"src" — a string used as a pointer), reached from
-      `nnMain` through `f_70007bd0b0`, `f_7000a68dd4`; that needs the same treatment: read the lifted C around the
-      faulting load and find which structure holds the string — blocked on a display with DRI3: `.101` has
+- [ ] title screen on `.101` and on BC-250 Bazzite — the boot now loads content (`/RSDB/*.rstbl.byml.zs`,
+      `/Pack/*.pack.zs`) and stops in the SDK's own `memcpy` (`f_70007bfa6c`/`f_70007bfa94`, deterministic, from
+      `f_70007bd0b0`). The copy overruns its source: `si_addr` is `0x737265cc`, inside the heap but past the source
+      object, so the length or the end pointer the caller passes is wrong. Next: read the argument setup in
+      `f_70007bd0b0` (it takes its source end from `sp+0xa0`) and the caller `f_7000a68dd4`, which is where the size
+      comes from — blocked on a display with DRI3: `.101` has
       no connected output and Xvfb has no DRI3, so the port boots with `
       vk: no usable Vulkan device` and stops at graphics init
 
