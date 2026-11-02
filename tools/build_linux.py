@@ -160,7 +160,7 @@ def main():
     objs = sorted(str(o) for o in obj.glob('*.o') if not is_generated(o)) + \
            sorted(str(o) for o in obj.glob('*.o') if is_generated(o))
     exe = out / 'totk'
-    cmd = [CC, '-fuse-ld=lld', '-o', str(exe), *objs,
+    cmd = [CC, '-fuse-ld=lld', '-rdynamic', '-o', str(exe), *objs,
            '-Wl,-T,' + str(ROOT / 'runtime' / 'platform' / 'linux' / 'sections.ld'),
            '-lSDL3', '-lvulkan', '-lopus', '-lvpx', '-lzstd', '-lpthread', '-ldl', '-lm', '-lstdc++']
     code, log = run(cmd)

@@ -469,7 +469,9 @@ BOOL SetWaitableTimer(HANDLE h, const LARGE_INTEGER *due, LONG period, void *rou
     struct Timer *t = h;
     if (!t || t->kind != K_TIMER) return FALSE;
     pthread_mutex_lock(&t->m);
-    t->due = mono_ns() + (uint64_t)(-due->QuadPart);
+    // A negative LARGE_INTEGER is a relative time in 100 ns units (Windows); the audio renderer paces its 5 ms buffers
+    // with exactly this, and treating the value as nanoseconds made every timer fire 100 times too early.
+    t->due = mono_ns() + (uint64_t)(-due->QuadPart) * 100u;
     t->armed = 1;
     pthread_cond_broadcast(&t->c);
     pthread_mutex_unlock(&t->m);

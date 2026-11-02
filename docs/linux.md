@@ -247,6 +247,9 @@ page written": slower, never stale.
   for 98 calls; Windows then calls `nn::os::AllocateAddressRegion`.
 - gdb needs `--cap-add=SYS_PTRACE` to attach inside a container. The lifted code has no frame pointers, so its
   backtraces stop at the host frame; the runtime's own tracing is the useful tool there.
+- The Linux build links with `-rdynamic`, so `dladdr` (and the host-signal log) names runtime functions; the offset
+  form (`exe+0x...`) resolves with `nm` for static ones. That is how the audio renderer (`render_thread`, audren.c) was
+  identified as the source of ~2000 signals a second where 200 (one per 5 ms buffer at 48 kHz) is expected.
 - `TOTK_EVENT_LOG=1` logs every kernel event create/signal/reset/wait with the guest caller, including the host-side
   signals (`kern_event_signal`). The hang after the first vibration is not a deadlock: the main thread polls
   `InterProcessEventImplByHorizon::Wait` (wait, reset, wait...) on two handles. One of them (the vsync/system event) is

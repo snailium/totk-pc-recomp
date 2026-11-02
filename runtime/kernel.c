@@ -21,6 +21,7 @@
 #include "platform/platform.h"
 #ifndef _WIN32
 #include <unistd.h>
+#include <dlfcn.h>
 #endif
 
 #define R_OK 0u
@@ -2054,8 +2055,15 @@ void kern_event_signal(uint32_t hw) {
     Event *e = h_peek(hw, O_EVENT_W);
     if (!e) rt_fatal("kern_event_signal: %#x is not a writable event handle", hw);
     if (ev_log()) {
-        char d[96];
-        rt_logf("event: host signal %#x (caller %s)\n", hw, ldr_describe((uint64_t)(uintptr_t)__builtin_return_address(0), d, sizeof d));
+#ifndef _WIN32
+        Dl_info di;
+        const char *sym = "?";
+        if (dladdr((void *)__builtin_return_address(0), &di) && di.dli_sname) sym = di.dli_sname;
+        rt_logf("event: host signal %#x (from %s exe+%#lx)\n", hw, sym,
+                (unsigned long)((uintptr_t)__builtin_return_address(0) - (uintptr_t)GetModuleHandleW(NULL)));
+#else
+        rt_logf("event: host signal %#x\n", hw);
+#endif
     }
     e->signaled = 1;
     wake_sync_waiters();
