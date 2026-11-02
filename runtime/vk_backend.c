@@ -28,6 +28,7 @@
 #include "host.h"
 #include "nvn_api.h"
 #include "vk.h"
+void kern_svc_dump(void);   // kernel.c
 #include "vk_exec.h"
 
 #define WEAK __attribute__((weak))
@@ -353,7 +354,7 @@ static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
     vk_sync_start();
     // TOTK_WAIT_LOG=1: the blocking budget of every 60 frames, so a slow frame is attributed rather than guessed.
     static uint64_t presents;
-    if (++presents % 60 == 0) waitstat_dump("60 frames");
+    if (++presents % 60 == 0) waitstat_dump("60 frames"), kern_svc_dump();
     extern void vk_texture_present_debug(const tex_t *t);
     vk_texture_present_debug(t);
     if (!gfx_replay_async()) {

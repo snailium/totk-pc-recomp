@@ -1627,8 +1627,27 @@ static void cv_hook(void) {
     if (h) h();
 }
 
+// TOTK_SVC_LOG=1: which supervisor calls the guest issues and how often. A guest thread that spins on a call the port
+// answers without blocking shows up here as millions of one id, which no thread dump can show.
+static uint64_t g_svc_n[256];
+
+void kern_svc_dump(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("TOTK_SVC_LOG");
+        on = v && *v == '1';
+    }
+    if (!on) return;
+    rt_log("svc: per-call totals");
+    for (int i = 0; i < 256; i++) {
+        uint64_t n = __atomic_exchange_n(&g_svc_n[i], 0, __ATOMIC_RELAXED);
+        if (n) rt_log("svc:   %#04x %12llu", i, (unsigned long long)n);
+    }
+}
+
 int kern_svc(Cpu *c, uint32_t imm) {
     uint64_t *x = c->x;
+    if (imm < 256) __atomic_add_fetch(&g_svc_n[imm], 1, __ATOMIC_RELAXED);
     if (g_diag > 0 && tcur) tcur->dg_svc = imm;
     switch (imm) {
     case 0x08: {   // CreateThread(-> w1 handle; x1 entry, x2 arg, x3 stack top, w4 priority, w5 core)

@@ -246,6 +246,10 @@ Acceptance for each item is a command that fails before and passes after.
       GTK's icon loader (`gtkiconhelper.c: ensure_surface_for_gicon`, the `image-missing.svg` loader under `bwrap`), which
       `libdecor`'s GTK plugin pulls in when SDL creates the Wayland window. On Bazzite the same binary creates its window
       and presents. Either drop libdecor from that container or run the XTX comparison outside it.
+- [x] where the guest's own CPU goes: with `TOTK_SVC_LOG=1` the supervisor-call histogram over 60 frames is dominated by
+      `0x0b` (SleepThread, about 680 a frame) with `0x34`/`0x35` next at about 155 each and the lock pair
+      `0x1a`/`0x1b` at about 55, which is the guest's own spin-and-yield pattern; the runtime calls are cheap, the cost is
+      the frame's replay recording on top of them.
 - [x] the default configuration is the fast one on Linux: the freshness check answers from the port's stamps
       (`TOTK_WATCH=self`, now the default off Windows) and the mirror writeback stays on, which is 12.7 fps out of the box
       against 4.3 with the OS write watch; `TOTK_WATCH=watch` asks for the OS watch again.
