@@ -227,7 +227,10 @@ Acceptance for each item is a command that fails before and passes after.
       address (`0x33312120`), while the main thread waits in `InternalCriticalSectionImplByHorizon::Enter`. The NVN replay
       calls back into guest code (the command buffer memory callbacks), and that callback path deadlocks against the guest
       lock the main thread wants. This is the next thing to fix: the replay must not enter guest callbacks while the
-      submitting thread holds, or needs, a guest lock.
+      submitting thread holds, or needs, a guest lock. `TOTK_NVN_MEMCB=0`, `TOTK_REPLAY_ASYNC=1` and
+      `TOTK_FREE_CORES=1` all stop in the same place, and the key never appears in the sync log at all, so it is a wait
+      without a timeout that nothing signals. A CI-built binary carries no baked game paths: a run of one needs
+      `TOTK_EXEFS` and `TOTK_ROMFS`, or a rebuild with `--exefs/--romfs`.
 - [ ] reaching a frame from there needs the peer's behaviour, not just the signal: the event is the applet/system
       message channel (the guest creates it with `nn::os::CreateSystemEvent` in inter-process mode), whose peer on a
       console writes a message into shared memory and then signals. Signalling alone advances one step and the boot
