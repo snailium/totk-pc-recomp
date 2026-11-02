@@ -44,7 +44,15 @@ if not xlate.is_file():
 for name in ('totk_xlate', 'totk_xlate.id'):
     shutil.copy2(build / name, out / name)
 
-# The shader cache and pipeline keys live next to the executable; the RomFS index too when the build wrote one.
+# The runtime reads the RomFS index and any overlay patches from beside the executable, so a bundle that is meant to run
+# the game needs them; --prepare-shaders writes the shader cache there too, and it is rebuilt on demand.
+for name in ('romfs-index.bin',):
+    src = build / name
+    if src.is_file():
+        shutil.copy2(src, out / name)
+if (build / 'romfs-patches').is_dir():
+    shutil.copytree(build / 'romfs-patches', out / 'romfs-patches', dirs_exist_ok=True)
+
 for name in ('totk.ini.example',):
     src = root / name
     if src.is_file():
