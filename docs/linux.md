@@ -238,6 +238,10 @@ Acceptance for each item is a command that fails before and passes after.
       asynchronous (or no watch at all) for the pools Vulkan imports. `TOTK_WATCH=self` is the first step of that: the
       freshness check then answers from the port's own stamps only and a texture nothing wrote reports no change, with a
       2 MiB region filter first so an untouched texture costs one comparison per region rather than one per page.
+- [ ] the 7900 XTX comparison is blocked by the container on `.101`, not by the port: the process aborts at startup inside
+      GTK's icon loader (`gtkiconhelper.c: ensure_surface_for_gicon`, the `image-missing.svg` loader under `bwrap`), which
+      `libdecor`'s GTK plugin pulls in when SDL creates the Wayland window. On Bazzite the same binary creates its window
+      and presents. Either drop libdecor from that container or run the XTX comparison outside it.
 - [x] the frame budget on the BC-250 is the GPU, not the CPU: the submitting thread blocks in `ioctl(ac_drm_cs_submit_raw2)`
       (the kernel waiting for room in the command ring) during the load, with the ASTC compute decoder and the replay
       queue ahead of it. That is a property of the hardware and of how much work the port asks of it, not of the write
