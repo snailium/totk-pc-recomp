@@ -472,6 +472,27 @@ static void check_memory(void) {
     CHECK(q.state == 3 && q.base == g->alias.base + g->alias.size, "QueryMemory on host memory");
     CHECK(mem_set_heap_size(0, &heap) == 0, "SetHeapSize 0");
     printf("memory: heap, physical memory, stack move, QueryMemory, GetInfo: %s\n", failures > before ? "FAIL" : "ok");
+
+    // Write watch: a page written shows up once, and RESET clears it. Runs through whichever tracker the platform
+    // layer armed (userfaultfd, or soft-dirty when TOTK_WRITE_WATCH=softdirty, or none at all).
+    before = failures;
+    void *w = VirtualAlloc(NULL, 0x40000, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE);
+    CHECK(w != NULL, "VirtualAlloc with MEM_WRITE_WATCH");
+    if (w) {
+        void *pages[64];
+        ULONG_PTR n = 64;
+        DWORD gran = 0;
+        memset(w, 1, 0x1000);                                     // touch page 2 only
+        UINT r = GetWriteWatch(WRITE_WATCH_FLAG_RESET, w, 0x40000, pages, &n, &gran);
+        printf("write watch: tracker %s, %llu page(s) after one write\n", r ? "untracked" : "active",
+               (unsigned long long)(r ? 0 : n));
+        CHECK(r || n >= 1, "a written page is reported");
+        n = 64;
+        r = GetWriteWatch(WRITE_WATCH_FLAG_RESET, w, 0x40000, pages, &n, &gran);
+        CHECK(r || n == 0, "RESET clears the written pages");
+        VirtualFree(w, 0x40000, MEM_RELEASE);
+    }
+    printf("memory: write watch: %s\n", failures > before ? "FAIL" : "ok");
 }
 
 static int selftest(void) {

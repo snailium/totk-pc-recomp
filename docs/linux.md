@@ -233,9 +233,20 @@ page written": slower, never stale.
 `userfaultfd` needs `--security-opt seccomp=unconfined` in Docker (the default profile blocks the syscall); the log line
 `watch: userfaultfd write watch active (WP_ASYNC, kernel dirty bits)` confirms which path is in use.
 
+Where userfaultfd is unavailable (a container with the default seccomp profile, `vm.unprivileged_userfaultfd=0`, an older
+kernel), the soft-dirty fallback takes over: `/proc/self/clear_refs` `4` clears the process-wide soft-dirty bits and
+`/proc/self/pagemap` bit 55 reports the pages written since. Because the bits are process-wide, a range is only tracked
+when it is small enough to scan before the bits are cleared (512 MiB per range, 2 GiB in total); larger ranges stay
+untracked and their callers upload every page, which is slower but never stale. `TOTK_WRITE_WATCH=softdirty` forces the
+fallback for testing (the log then says `soft-dirty write watch active`).
+
+`--selftest` covers both: it allocates a watched range, writes one page, and checks that `GetWriteWatch` reports it and
+that a `RESET` query reports none.
+
 ### M4 — memory semantics
 - [x] write watch: userfaultfd `WP_ASYNC` + `PAGEMAP_SCAN` path, logged at startup as
-      `watch: userfaultfd write watch active`; trap fallback stays disarmed (see above), soft-dirty still to do
+      `watch: userfaultfd write watch active`; soft-dirty fallback (`clear_refs` + pagemap bit 55) for platforms
+      without userfaultfd, forced with `TOTK_WRITE_WATCH=softdirty`; `--selftest` verifies both
 - [ ] preemption: `SIGUSR1` + `ucontext`; verify `TOTK_ASYNC_PREEMPT=0/1` both work
 - [ ] freeze/thaw: `mprotect` + `SIGSEGV`; alias page table unchanged
 - [ ] compare frame time with the Windows build on the same scene, same GPU

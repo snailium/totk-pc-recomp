@@ -796,6 +796,7 @@ int _wcsicmp(const WCHAR *a, const WCHAR *b) {
 int _stricmp(const char *a, const char *b) { return strcasecmp(a, b); }
 int _strnicmp(const char *a, const char *b, size_t n) { return strncasecmp(a, b, n); }
 
+
 // ---- write watch through userfaultfd
 //
 // The kernel's own dirty-bit tracking, the same mechanism Wine uses: a range is write-protected asynchronously
@@ -805,6 +806,8 @@ static int g_uffd = -1, g_pagemap = -1, g_uffd_watch;
 
 static int uffd_init(void) {
     if (g_uffd_watch) return 1;
+    const char *mode = getenv("TOTK_WRITE_WATCH");
+    if (mode && !strcmp(mode, "softdirty")) return 0;   // force the fallback, for testing it
     if (g_uffd < 0) {
         g_uffd = (int)syscall(SYS_userfaultfd, O_CLOEXEC | O_NONBLOCK | UFFD_USER_MODE_ONLY);
         if (g_uffd < 0) {
@@ -880,6 +883,7 @@ typedef struct {
     size_t size;
     uint8_t *dirty;   // one byte per 4 KiB page (trap flavour only)
     int kernel_tracked; // 1: userfaultfd tracks writes, so a fault here is a mapping fault, not a watch write
+    int sd_tracked;     // 1: soft-dirty bits track writes (fallback; the bits are process-wide)
 } Watch;
 
 static Watch g_watch[WATCH_MAX];
@@ -996,8 +1000,79 @@ static void watch_after_commit(void *addr, size_t n) {
     mprotect(addr, n, PROT_READ);
 }
 
+// ---- write watch through soft dirty bits (fallback when userfaultfd is not available)
+//
+// /proc/self/clear_refs (4) clears the soft-dirty bit of every page; /proc/self/pagemap reports bit 55 for pages
+// written since then. The bits are process-wide, so a scan must read every tracked range before the bits are cleared
+// again, and a range too large to scan cheaply stays untracked (its callers then treat every page as written).
+static int g_sd_clear = -1, g_sd_pagemap = -1, g_sd_on;
+static const size_t SD_MAX_RANGE = 512u << 20;   // per range
+static const size_t SD_MAX_TOTAL = 2ull << 30;   // all ranges together
+static size_t g_sd_total;
+
+static int sd_init(void) {
+    if (g_sd_on) return 1;
+    if (g_sd_clear < 0) {
+        g_sd_clear = open("/proc/self/clear_refs", O_WRONLY | O_CLOEXEC);
+        g_sd_pagemap = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
+        if (g_sd_clear < 0 || g_sd_pagemap < 0) return 0;
+    }
+    g_sd_on = 1;
+    rt_logf("watch: soft-dirty write watch active (clear_refs + pagemap; ranges over %zu MiB stay untracked)\n",
+            SD_MAX_RANGE >> 20);
+    return 1;
+}
+
+// Pages of [base, base+size) written since the last global clear, as 4 KiB addresses.
+static size_t sd_written(uintptr_t base, size_t size, uint64_t *pages, size_t max) {
+    enum { CHUNK = 128 * 1024 };   // pages per pread: 1 MiB of pagemap entries
+    uint64_t buf[CHUNK];
+    size_t n = 0;
+    for (size_t done = 0; done < size / 4096 && n < max;) {
+        size_t want = size / 4096 - done;
+        if (want > CHUNK) want = CHUNK;
+        ssize_t got = pread(g_sd_pagemap, buf, want * sizeof buf[0],
+                            (off_t)((base / 4096 + done) * sizeof buf[0]));
+        if (got <= 0) break;
+        size_t entries = (size_t)got / sizeof buf[0];
+        for (size_t i = 0; i < entries && n < max; i++)
+            if (buf[i] >> 55 & 1) pages[n++] = base + (done + i) * 4096;
+        done += entries;
+        if (entries < want) break;
+    }
+    return n;
+}
+
+// Reads every soft-dirty range (the bits are about to be cleared) and answers for the requested one.
+static size_t sd_collect(uintptr_t base, size_t size, uint64_t *pages, size_t max, int reset) {
+    pthread_mutex_lock(&g_watch_lock);
+    size_t n = 0;
+    int asked = 0;
+    uint64_t tmp;
+    for (int i = 0; i < WATCH_MAX; i++) {
+        Watch *w = &g_watch[i];
+        if (!w->dirty || !w->sd_tracked) continue;
+        int mine = (uintptr_t)base >= w->base && (uintptr_t)base + size <= w->base + w->size;
+        asked |= mine;
+        size_t k = mine ? sd_written((uintptr_t)base, size, pages, max)
+                        : sd_written(w->base, w->size, &tmp, 1);
+        if (mine) n = k;
+    }
+    if (reset && g_sd_on) {
+        const char clear[] = "4";
+        if (pwrite(g_sd_clear, clear, 1, 0) != 1) g_sd_on = 0;
+    }
+    pthread_mutex_unlock(&g_watch_lock);
+    return asked ? n : (size_t)-1;
+}
+
 static void watch_register(void *base, size_t n) {
     int kernel = uffd_init() && uffd_watch((uintptr_t)base, n);
+    int sd = 0;
+    if (!kernel && n <= SD_MAX_RANGE && g_sd_total + n <= SD_MAX_TOTAL && sd_init()) {
+        sd = 1;
+        g_sd_total += n;
+    }
     if (!kernel) watch_install();
     // The range is recorded either way: the fault path needs to know whether it owns the range (trap flavour) or
     // whether the kernel does (then a fault there is a mapping fault, and the runtime's handlers must see it).
@@ -1010,6 +1085,7 @@ static void watch_register(void *base, size_t n) {
         g_watch[i].size = n;
         g_watch[i].dirty = bits;
         g_watch[i].kernel_tracked = kernel;
+        g_watch[i].sd_tracked = sd;
         break;
     }
     pthread_mutex_unlock(&g_watch_lock);
@@ -1094,6 +1170,22 @@ SIZE_T VirtualQuery(const void *addr, MEMORY_BASIC_INFORMATION *mbi, SIZE_T len)
 
 UINT GetWriteWatch(DWORD flags, void *base, SIZE_T size, void **pages, ULONG_PTR *count, DWORD *granularity) {
     if (!count || !granularity || !pages) return 1;
+    if (!g_uffd_watch && g_sd_on) {
+        size_t n = sd_collect((uintptr_t)base, size, (uint64_t *)(void *)pages, *count,
+                              (flags & WRITE_WATCH_FLAG_RESET) != 0);
+        if (n == (size_t)-1) return 1;
+        *count = n;
+        *granularity = 4096;
+        return 0;
+    }
+    if (!g_uffd_watch && g_sd_on) {
+        size_t n = sd_collect((uintptr_t)base, size, (uint64_t *)(void *)pages, *count,
+                              (flags & WRITE_WATCH_FLAG_RESET) != 0);
+        if (n == (size_t)-1) return 1;
+        *count = n;
+        *granularity = 4096;
+        return 0;
+    }
     if (g_uffd_watch) {
         if (!watch_for((uintptr_t)base)) return 1;
         size_t n = uffd_written((uintptr_t)base, size, (uint64_t *)(void *)pages, *count,
