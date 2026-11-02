@@ -135,6 +135,7 @@ void SetLastError(DWORD err);
 #define FILE_FLAG_SEQUENTIAL_SCAN 0x08000000
 #define FILE_FLAG_NO_BUFFERING 0x20000000
 #define FILE_FLAG_BACKUP_SEMANTICS 0x02000000
+#define FILE_FLAG_OVERLAPPED 0x40000000
 #define EXCEPTION_PRIV_INSTRUCTION 0xC0000096u
 #define EXCEPTION_STACK_OVERFLOW 0xC00000FDu
 #define EXCEPTION_IN_PAGE_ERROR 0xC0000006u
@@ -321,6 +322,7 @@ DWORD GetFileType(HANDLE h);
 BOOL GetModuleHandleExW(DWORD flags, const WCHAR *name, HMODULE *out);
 int _commit(int fd);
 int _fileno(FILE *f);
+FILE *_wfopen(const WCHAR *path, const WCHAR *mode);
 int _fseeki64(FILE *f, int64_t off, int whence);
 int64_t _ftelli64(FILE *f);
 void _tzset(void);
@@ -473,6 +475,7 @@ typedef struct {
     };
     HANDLE hEvent;
 } OVERLAPPED;
+BOOL GetOverlappedResult(HANDLE h, OVERLAPPED *ov, DWORD *got, BOOL wait);
 
 int MultiByteToWideChar(UINT cp, DWORD flags, const char *in, int in_len, WCHAR *out, int out_cap);
 int WideCharToMultiByte(UINT cp, DWORD flags, const WCHAR *in, int in_len, char *out, int out_cap, const char *def,

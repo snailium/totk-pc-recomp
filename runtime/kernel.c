@@ -403,35 +403,54 @@ static int ap_disabled(const RtThread *t) { return g_ap > 0 && ap_tlr(t)[0]; }
 // in kern_ap_yield and jumps back to kern_ap_rip(), whose value it first stores in the return slot it reserved at
 // entry, so a stack walk sees the interrupted function as its caller. No ret: the jump keeps call/return pairs
 // balanced. The waiter never writes the owner's stack.
+// The unwind directives are COFF/SEH, Windows-only; ELF wants nothing there, so they are empty off Windows.
+#if defined(_WIN32)
+#define ASM_DEF ".def kern_ap_stub; .scl 2; .type 32; .endef\n"
+#define ASM_SEH_PROC ".seh_proc kern_ap_stub\n"
+#define ASM_SEH_END ".seh_endproc\n"
+#define ASM_SEH_STACK ".seh_stackalloc 8\n"
+#define ASM_SEH_SETFRAME ".seh_setframe %rbp, 0\n"
+#define ASM_SEH_ENDPROLOGUE ".seh_endprologue\n"
+#define ASM_SEH_PUSHREG(r) ".seh_pushreg " r "\n"
+#else
+#define ASM_DEF ""
+#define ASM_SEH_PROC ""
+#define ASM_SEH_END ""
+#define ASM_SEH_STACK ""
+#define ASM_SEH_SETFRAME ""
+#define ASM_SEH_ENDPROLOGUE ""
+#define ASM_SEH_PUSHREG(r) ""
+#endif
+
 __asm__(".text\n"
         ".globl kern_ap_stub\n"
-        ".def kern_ap_stub; .scl 2; .type 32; .endef\n"
+        ASM_DEF
         ".p2align 4\n"
         "kern_ap_stub:\n"
-        ".seh_proc kern_ap_stub\n"
+        ASM_SEH_PROC
         "    leaq -8(%rsp), %rsp\n"   // not sub: the flags are still the interrupted code's until pushfq
-        ".seh_stackalloc 8\n"
+        ASM_SEH_STACK
         "    pushfq\n"
-        ".seh_stackalloc 8\n"
+        ASM_SEH_STACK
         "    pushq %rax\n"
-        ".seh_pushreg %rax\n"
+        ASM_SEH_PUSHREG("%rax")
         "    pushq %rcx\n"
-        ".seh_pushreg %rcx\n"
+        ASM_SEH_PUSHREG("%rcx")
         "    pushq %rdx\n"
-        ".seh_pushreg %rdx\n"
+        ASM_SEH_PUSHREG("%rdx")
         "    pushq %r8\n"
-        ".seh_pushreg %r8\n"
+        ASM_SEH_PUSHREG("%r8")
         "    pushq %r9\n"
-        ".seh_pushreg %r9\n"
+        ASM_SEH_PUSHREG("%r9")
         "    pushq %r10\n"
-        ".seh_pushreg %r10\n"
+        ASM_SEH_PUSHREG("%r10")
         "    pushq %r11\n"
-        ".seh_pushreg %r11\n"
+        ASM_SEH_PUSHREG("%r11")
         "    pushq %rbp\n"
-        ".seh_pushreg %rbp\n"
+        ASM_SEH_PUSHREG("%rbp")
         "    movq %rsp, %rbp\n"
-        ".seh_setframe %rbp, 0\n"
-        ".seh_endprologue\n"
+        ASM_SEH_SETFRAME
+        ASM_SEH_ENDPROLOGUE
         "    andq $-32, %rsp\n"
         "    subq $576, %rsp\n"   // 0: shadow space, 32: MXCSR saved, 36: MXCSR default, 64: YMM0-15
         "    vmovdqa %ymm0, 64(%rsp)\n"
@@ -487,7 +506,7 @@ __asm__(".text\n"
         "    popfq\n"
         "    leaq 8(%rsp), %rsp\n"
         "    jmpq *-8(%rsp)\n"
-        ".seh_endproc\n");
+        ASM_SEH_END);
 
 enum { AP_NONE, AP_RETRY, AP_SENT };
 

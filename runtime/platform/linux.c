@@ -126,7 +126,7 @@ void plat_sleep_ns(uint64_t ns) {
 static pthread_mutex_t init_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void *slot_create(void **slot, size_t size, int is_cond) {
-    void *p = atomic_load((void *volatile *)slot);
+    void *p = __atomic_load_n((void **)slot, __ATOMIC_ACQUIRE);
     if (p) return p;
     pthread_mutex_lock(&init_lock);
     p = *slot;
@@ -146,7 +146,7 @@ static void *slot_create(void **slot, size_t size, int is_cond) {
                 pthread_mutex_init(p, &a);
                 pthread_mutexattr_destroy(&a);
             }
-            atomic_store((void *volatile *)slot, p);
+            __atomic_store_n((void **)slot, p, __ATOMIC_RELEASE);
         }
     }
     pthread_mutex_unlock(&init_lock);

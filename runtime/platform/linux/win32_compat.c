@@ -835,6 +835,9 @@ void *VirtualAlloc(void *addr, SIZE_T size, DWORD type, DWORD prot) {
     int flags = MAP_PRIVATE | MAP_ANONYMOUS;
     int p = PROT_NONE;
     if (type & MEM_COMMIT) p = prot_of(prot);
+    // Committing inside a reservation: the pages are already mapped PROT_NONE and anonymous, so mprotect is the
+    // whole operation (Windows' MEM_COMMIT has exactly that meaning for a reserved range).
+    if (addr && (type & MEM_COMMIT) && !(type & MEM_RESERVE) && mprotect(addr, n, p) == 0) return addr;
     if (addr) flags |= MAP_FIXED_NOREPLACE;
     void *m = mmap(addr, n, p, flags, -1, 0);
     if (m == MAP_FAILED) { SetLastError(errno == EEXIST ? ERROR_ALREADY_EXISTS : errno); return NULL; }
@@ -867,7 +870,13 @@ BOOL VirtualFree(void *addr, SIZE_T size, DWORD type) {
         pthread_mutex_unlock(&g_watch_lock);
         return munmap(addr, page_up(size)) == 0;
     }
-    if (type & MEM_DECOMMIT) return mprotect(addr, page_up(size), PROT_NONE) == 0;
+    if (type & MEM_DECOMMIT) {
+        // Decommit means the content is gone: a later commit must read zeros, as Windows guarantees. MADV_DONTNEED
+        // discards the anonymous pages, so the next touch faults in fresh zero pages.
+        size_t n = page_up(size);
+        madvise(addr, n, MADV_DONTNEED);
+        return mprotect(addr, n, PROT_NONE) == 0;
+    }
     return FALSE;
 }
 
@@ -895,10 +904,13 @@ SIZE_T VirtualQuery(const void *addr, MEMORY_BASIC_INFORMATION *mbi, SIZE_T len)
         mbi->BaseAddress = (PVOID)(uintptr_t)lo;
         mbi->AllocationBase = (PVOID)(uintptr_t)lo;
         mbi->RegionSize = (SIZE_T)(hi - lo);
-        mbi->AllocationProtect = mbi->Protect = perms[1] == 'w' ? PAGE_READWRITE
-                                  : perms[0] == 'r' ? PAGE_READONLY
-                                  : PAGE_NOACCESS;
-        mbi->State = MEM_COMMIT;
+        // A PROT_NONE anonymous mapping is how a reservation looks here, and MEM_RESERVE is what VirtualQuery must
+        // report for it: the runtime checks its fixed windows that way.
+        int accessed = perms[0] == 'r' || perms[1] == 'w' || perms[2] == 'x';
+        mbi->Protect = perms[1] == 'w' ? PAGE_READWRITE : perms[0] == 'r' ? PAGE_READONLY
+                       : perms[2] == 'x' ? PAGE_EXECUTE : PAGE_NOACCESS;
+        mbi->AllocationProtect = mbi->Protect;
+        mbi->State = accessed ? MEM_COMMIT : MEM_RESERVE;
         mbi->Type = MEM_PRIVATE;
         got = sizeof *mbi;
         break;
@@ -1900,4 +1912,20 @@ DWORD GetFileType(HANDLE h) {
     if (S_ISCHR(st.st_mode)) return FILE_TYPE_CHAR;
     if (S_ISFIFO(st.st_mode) || S_ISSOCK(st.st_mode)) return FILE_TYPE_PIPE;
     return FILE_TYPE_UNKNOWN;
+}
+
+FILE *_wfopen(const WCHAR *path, const WCHAR *mode) {
+    char p[4096], m[16];
+    utf8_from_wide(path, p, sizeof p);
+    utf8_from_wide(mode, m, sizeof m);
+    return fopen(p, m);
+}
+
+// The Linux file layer is synchronous, so an OVERLAPPED operation has already completed when it returns.
+BOOL GetOverlappedResult(HANDLE h, OVERLAPPED *ov, DWORD *got, BOOL wait) {
+    (void)h;
+    (void)ov;
+    (void)wait;
+    if (got) *got = 0;
+    return TRUE;
 }

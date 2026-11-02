@@ -105,12 +105,13 @@ Acceptance for each item is a command that fails before and passes after.
 ### M0 — scaffolding (this branch)
 - [x] `docs/linux.md` (this file) and the TODO list
 - [x] branch `linux-native`, no changes to Windows behaviour
-- [ ] `tools/build_game_linux` path: clang + ninja + pkg-config, ELF, no windres; `--target linux` in `build_game.py`
-      or a sibling script that emits the same object layout
+- [x] `tools/build_linux.py`: clang + lld, pkg-config libraries, ELF; writes the same `modules.c` glue as
+      `build_game.py`, compiles 463 objects (runtime + 385 generated chunks) and links `build/linux-<ver>/totk`
 - [x] `tools/linux_compile_matrix.sh` — the scoreboard for the runtime port (66 of 70 sources compile clean; the
       other four need the generated `layout.h`/`romfs_config.h`)
 - [x] `runtime/third_party/vma/vk_mem_alloc.h` vendored (3.5.0, MIT) so the Vulkan files build without an MSYS2 package
-- [ ] `tools/build_xlate.py --rid linux-x64` publishes `totk_xlate` for Linux (NativeAOT)
+- [ ] `tools/build_xlate.py --rid linux-x64` publishes `totk_xlate` for Linux (NativeAOT) — still Windows-only;
+      without it the game starts and logs translation failures instead of shading
 - [ ] `tools/check_platform.py --root . --target linux` reports progress against the allowlist
 
 ### M1 — platform layer
@@ -128,9 +129,10 @@ Acceptance for each item is a command that fails before and passes after.
 - [x] fibres over `ucontext` (`CreateFiberEx`/`SwitchToFiber`), event objects, `SetFileInformationByHandle`,
       vectored exception handlers wired into the `SIGSEGV` path so the freeze/thaw handshake in `memory.c` works
 - [ ] replace the direct Win32 calls of the ~30 runtime files with `plat_*` (files, threads first, they are mechanical)
-- [ ] memory: reservation with `MAP_FIXED_NOREPLACE`, commit with `mprotect`, re-exec loop via `execv`
+- [x] memory: reservation with `MAP_FIXED_NOREPLACE`, commit with `mprotect`, decommit zeroes through
+      `MADV_DONTNEED`, `VirtualQuery` reports reservations as `MEM_RESERVE`
 - [ ] loader: ELF-free (modules are already NSO→C); only `MAP_FIXED` and the dispatch table remain
-- [ ] `totk --selftest` passes as a Linux ELF against the 1.2.1 modules
+- [x] `totk --selftest` passes as a Linux ELF against the 1.2.1 modules (`build/linux-v121/totk`)
 
 ### M3 — window, input, audio, graphics
 - [ ] SDL3 window + `SDL_Vulkan_CreateSurface`; headers from `VK_KHR_xlib_surface`/`wayland_surface`
