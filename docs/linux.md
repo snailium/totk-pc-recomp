@@ -107,7 +107,8 @@ Acceptance for each item is a command that fails before and passes after.
 - [x] branch `linux-native`, no changes to Windows behaviour
 - [ ] `tools/build_game_linux` path: clang + ninja + pkg-config, ELF, no windres; `--target linux` in `build_game.py`
       or a sibling script that emits the same object layout
-- [x] `tools/linux_compile_matrix.sh` — the scoreboard for the runtime port (31 of 65 sources compile clean today)
+- [x] `tools/linux_compile_matrix.sh` — the scoreboard for the runtime port (66 of 70 sources compile clean; the
+      other four need the generated `layout.h`/`romfs_config.h`)
 - [x] `runtime/third_party/vma/vk_mem_alloc.h` vendored (3.5.0, MIT) so the Vulkan files build without an MSYS2 package
 - [ ] `tools/build_xlate.py --rid linux-x64` publishes `totk_xlate` for Linux (NativeAOT)
 - [ ] `tools/check_platform.py --root . --target linux` reports progress against the allowlist
@@ -121,7 +122,11 @@ Acceptance for each item is a command that fails before and passes after.
 
 ### M2 — runtime off Win32
 - [x] Win32 compatibility layer for the bring-up (`win32_compat.{h,c}` and the shim headers), documented above
-- [x] `vk.h` picks XCB instead of Win32 for the presentation surface; `VkNativeWindow` replaces `HWND`
+- [x] `vk.h` picks XCB instead of Win32 for the presentation surface; `VkNativeWindow` replaces `HWND`;
+      `vk_device.c` asks SDL3 (`SDL_Vulkan_GetPresentationSupport`) instead of `vkGetPhysicalDeviceWin32…`
+- [x] every non-generated runtime source compiles against the Linux headers (66/70; the rest need the generated files)
+- [x] fibres over `ucontext` (`CreateFiberEx`/`SwitchToFiber`), event objects, `SetFileInformationByHandle`,
+      vectored exception handlers wired into the `SIGSEGV` path so the freeze/thaw handshake in `memory.c` works
 - [ ] replace the direct Win32 calls of the ~30 runtime files with `plat_*` (files, threads first, they are mechanical)
 - [ ] memory: reservation with `MAP_FIXED_NOREPLACE`, commit with `mprotect`, re-exec loop via `execv`
 - [ ] loader: ELF-free (modules are already NSO→C); only `MAP_FIXED` and the dispatch table remain

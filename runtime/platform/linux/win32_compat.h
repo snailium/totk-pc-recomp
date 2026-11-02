@@ -28,6 +28,7 @@
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
+#include <ucontext.h>
 #include <wchar.h>
 
 // ---- types
@@ -98,6 +99,62 @@ void SetLastError(DWORD err);
 #define ERROR_NO_MORE_FILES 18
 #define ERROR_TIMEOUT 1460
 #define ERROR_IO_PENDING 997
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#define MB_ERR_INVALID_CHARS 0x00000008
+#define STARTF_USESTDHANDLES 0x00000100
+#define BCRYPT_USE_SYSTEM_PREFERRED_RNG 0x00000002
+#define TIMER_ALL_ACCESS 0x1F0003
+#define ERROR_SHARING_VIOLATION 32
+#define ERROR_DIRECTORY 267
+#define ERROR_FILE_EXISTS 80
+#define ERROR_DIR_NOT_EMPTY 145
+#define ERROR_NOACCESS 998
+#define ERROR_HANDLE_EOF 38
+#define ERROR_INVALID_DATA 13
+#define ERROR_NOT_SUPPORTED 50
+#define ERROR_DISK_FULL 112
+#define ERROR_WRITE_PROTECT 19
+#define ERROR_BROKEN_PIPE 109
+#define ERROR_BUFFER_OVERFLOW 111
+#define ERROR_INSUFFICIENT_BUFFER 122
+#define ERROR_INVALID_NAME 123
+#define ERROR_OPERATION_ABORTED 995
+#define ERROR_CANCELLED 1223
+#define ERROR_NOT_SAME_DEVICE 17
+#define ERROR_PRIVILEGE_NOT_HELD 1314
+#define STACK_SIZE_PARAM_IS_A_RESERVATION 0x00010000
+#define FindExSearchNameMatch 0
+#define GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT 0x00000002
+#define EXCEPTION_INT_DIVIDE_BY_ZERO 0xC0000094u
+#define FILE_ATTRIBUTE_TEMPORARY 0x100
+#define FILE_TYPE_DISK 1
+#define FILE_TYPE_CHAR 2
+#define FILE_TYPE_PIPE 3
+#define FILE_TYPE_UNKNOWN 0
+#define MAXIMUM_WAIT_OBJECTS 64
+#define FILE_FLAG_SEQUENTIAL_SCAN 0x08000000
+#define FILE_FLAG_NO_BUFFERING 0x20000000
+#define FILE_FLAG_BACKUP_SEMANTICS 0x02000000
+#define EXCEPTION_PRIV_INSTRUCTION 0xC0000096u
+#define EXCEPTION_STACK_OVERFLOW 0xC00000FDu
+#define EXCEPTION_IN_PAGE_ERROR 0xC0000006u
+#define VK_F8 0x77
+typedef union { struct { DWORD LowPart; DWORD HighPart; }; uint64_t QuadPart; } ULARGE_INTEGER;
+#define FILE_ATTRIBUTE_REPARSE_POINT 0x400
+#define FindExInfoBasic 0
+#define GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS 0x00000004
+#define EXCEPTION_ILLEGAL_INSTRUCTION 0xC000001Du
+#define STD_INPUT_HANDLE ((DWORD)-10)
+#define STD_OUTPUT_HANDLE ((DWORD)-11)
+#define STD_ERROR_HANDLE ((DWORD)-12)
+#define EXCEPTION_ACCESS_VIOLATION 0xC0000005u
+#define EXCEPTION_CONTINUE_SEARCH 0
+#define EXCEPTION_CONTINUE_EXECUTION (-1)
+
+// glibc turns bsearch/qsort into checking macros; the runtime passes compound literals through them.
+#ifdef bsearch
+#undef bsearch
+#endif
 
 // ---- locks and condition variables (zero-initialised is valid, like the Windows ones)
 
@@ -150,7 +207,7 @@ void *InterlockedCompareExchangePointer(void *volatile *p, void *v, void *cmp);
 
 // ---- threads
 
-typedef void *(*PTHREAD_START_ROUTINE)(void *);
+typedef DWORD (*PTHREAD_START_ROUTINE)(void *);   // Windows thread functions return DWORD
 #define THREAD_PRIORITY_IDLE -15
 #define THREAD_PRIORITY_LOWEST -2
 #define THREAD_PRIORITY_BELOW_NORMAL -1
@@ -163,6 +220,7 @@ typedef void *(*PTHREAD_START_ROUTINE)(void *);
 #define THREAD_GET_CONTEXT 0x0008
 #define THREAD_SET_CONTEXT 0x0010
 #define THREAD_QUERY_INFORMATION 0x0040
+#define THREAD_QUERY_LIMITED_INFORMATION 0x0800
 
 HANDLE CreateThread(void *attr, SIZE_T stack, PTHREAD_START_ROUTINE fn, void *arg, DWORD flags, DWORD *id);
 BOOL CloseHandle(HANDLE h);
@@ -177,10 +235,27 @@ int GetThreadPriority(HANDLE h);
 BOOL SetThreadAffinityMask(HANDLE h, DWORD_PTR mask);
 void SwitchToThread(void);
 DWORD GetActiveProcessorCount(WORD group);
+
+// fibres: the SDK switches fibres by swapping register context; the runtime gives each guest fibre its own host
+// fibre with a large reserved stack.
+#define FIBER_FLAG_FLOAT_SWITCH 0x1
+void *ConvertThreadToFiber(void *param);
+void *ConvertThreadToFiberEx(void *param, DWORD flags);
+BOOL ConvertFiberToThread(void);
+void *CreateFiber(SIZE_T size, void (*fn)(void *), void *arg);
+void *CreateFiberEx(SIZE_T commit, SIZE_T reserve, DWORD flags, void (*fn)(void *), void *arg);
+void SwitchToFiber(void *fiber);
+void DeleteFiber(void *fiber);
+void *GetCurrentFiber(void);
+BOOL IsThreadAFiber(void);
 #define ALL_PROCESSOR_GROUPS 0xFFFF
 BOOL SetThreadDescription(HANDLE h, const WCHAR *name);
 HANDLE OpenThread(DWORD access, BOOL inherit, DWORD tid);
 DWORD WaitForSingleObject(HANDLE h, DWORD ms);
+DWORD WaitForMultipleObjects(DWORD count, const HANDLE *handles, BOOL wait_all, DWORD ms);
+short GetAsyncKeyState(int vk);
+void YieldProcessor(void);
+int _get_timezone(long *seconds);
 BOOL GetExitCodeThread(HANDLE h, DWORD *code);
 void GetSystemInfo(void *info);
 
@@ -230,6 +305,55 @@ void timeEndPeriod(UINT ms);
 
 typedef void *HANDLE_TIMER;
 HANDLE CreateWaitableTimerExW(void *attr, const WCHAR *name, DWORD flags, DWORD access);
+HANDLE CreateEventW(void *attr, BOOL manual_reset, BOOL initial, const WCHAR *name);
+HANDLE CreateEventA(void *attr, BOOL manual_reset, BOOL initial, const char *name);
+BOOL SetEvent(HANDLE e);
+BOOL ResetEvent(HANDLE e);
+BOOL CreateDirectoryA(const char *path, void *sa);
+DWORD GetFullPathNameA(const char *name, DWORD cap, char *out, char **file);
+DWORD GetTempPathA(DWORD cap, char *out);
+DWORD GetTempPathW(DWORD cap, WCHAR *out);
+DWORD GetCurrentDirectoryW(DWORD cap, WCHAR *out);
+DWORD GetCurrentDirectoryA(DWORD cap, char *out);
+BOOL SetCurrentDirectoryW(const WCHAR *path);
+BOOL GetDiskFreeSpaceExW(const WCHAR *path, uint64_t *avail, uint64_t *total, uint64_t *free_bytes);
+DWORD GetFileType(HANDLE h);
+BOOL GetModuleHandleExW(DWORD flags, const WCHAR *name, HMODULE *out);
+int _commit(int fd);
+int _fileno(FILE *f);
+int _fseeki64(FILE *f, int64_t off, int whence);
+int64_t _ftelli64(FILE *f);
+void _tzset(void);
+char *strtok_s(char *s, const char *delim, char **ctx);
+HANDLE GetStdHandle(DWORD which);
+BOOL GetProcessTimes(HANDLE proc, FILETIME *create, FILETIME *exit, FILETIME *kernel, FILETIME *user);
+BOOL GetThreadTimes(HANDLE thread, FILETIME *create, FILETIME *exit, FILETIME *kernel, FILETIME *user);
+DWORD GetTempFileNameA(const char *dir, const char *prefix, UINT unique, char *out);
+typedef struct {
+    WORD wYear, wMonth, wDayOfWeek, wDay, wHour, wMinute, wSecond, wMilliseconds;
+} SYSTEMTIME;
+void GetLocalTime(SYSTEMTIME *st);
+void GetSystemTime(SYSTEMTIME *st);
+LONGLONG InterlockedOr64(LONGLONG volatile *p, LONGLONG v);
+LONGLONG InterlockedAnd64(LONGLONG volatile *p, LONGLONG v);
+LONG InterlockedExchangeAdd(LONG volatile *p, LONG v);
+
+// vectored exception handlers (the freeze/thaw path in memory.c)
+typedef struct _EXCEPTION_RECORD {
+    DWORD ExceptionCode;
+    DWORD ExceptionFlags;
+    struct _EXCEPTION_RECORD *ExceptionRecord;
+    void *ExceptionAddress;
+    DWORD NumberParameters;
+    ULONG_PTR ExceptionInformation[15];
+} EXCEPTION_RECORD;
+typedef struct _EXCEPTION_POINTERS {
+    EXCEPTION_RECORD *ExceptionRecord;
+    CONTEXT *ContextRecord;
+} EXCEPTION_POINTERS;
+typedef LONG (*PVECTORED_EXCEPTION_HANDLER)(EXCEPTION_POINTERS *);
+void *AddVectoredExceptionHandler(ULONG first, PVECTORED_EXCEPTION_HANDLER fn);
+ULONG RemoveVectoredExceptionHandler(void *handle);
 BOOL SetWaitableTimer(HANDLE t, const LARGE_INTEGER *due, LONG period, void *routine, void *arg, BOOL resume);
 
 // ---- files
@@ -243,6 +367,13 @@ typedef struct {
     WCHAR cAlternateFileName[14];
 } WIN32_FIND_DATAW;
 typedef WIN32_FIND_DATAW *LPWIN32_FIND_DATAW;
+typedef struct {
+    DWORD dwFileAttributes;
+    WCHAR cFileName[MAX_PATH];
+} WIN32_FIND_DATAA;
+HANDLE FindFirstFileA(const char *pattern, WIN32_FIND_DATAA *data);
+HANDLE FindFirstFileExA(const char *pattern, int level, WIN32_FIND_DATAA *data, int search, void *filter, DWORD flags);
+BOOL FindNextFileA(HANDLE h, WIN32_FIND_DATAA *data);
 
 #define GENERIC_READ 0x80000000u
 #define GENERIC_WRITE 0x40000000u
@@ -278,12 +409,18 @@ BOOL SetFileAttributesW(const WCHAR *path, DWORD attr);
 BOOL DeleteFileW(const WCHAR *path);
 BOOL DeleteFileA(const char *path);
 BOOL MoveFileExW(const WCHAR *from, const WCHAR *to, DWORD flags);
+BOOL CreateHardLinkW(const WCHAR *to, const WCHAR *from, void *sa);
 BOOL CreateDirectoryW(const WCHAR *path, void *sa);
 BOOL RemoveDirectoryW(const WCHAR *path);
+BOOL RemoveDirectoryA(const char *path);
 HANDLE FindFirstFileW(const WCHAR *pattern, WIN32_FIND_DATAW *data);
 BOOL FindNextFileW(HANDLE h, WIN32_FIND_DATAW *data);
 BOOL FindClose(HANDLE h);
 DWORD GetModuleFileNameA(HMODULE mod, char *out, DWORD cap);
+WCHAR *GetCommandLineW(void);
+HWND GetForegroundWindow(void);
+void GetSystemTimeAsFileTime(FILETIME *ft);
+int localtime_s(struct tm *out, const time_t *t);
 DWORD GetModuleFileNameW(HMODULE mod, WCHAR *out, DWORD cap);
 BOOL CreateProcessW(const WCHAR *app, WCHAR *cmd, void *pa, void *ta, BOOL inherit, DWORD flags, void *env,
                     const WCHAR *dir, void *si, void *pi);
@@ -311,6 +448,31 @@ typedef struct {
     LPVOID lpSecurityDescriptor;
     BOOL bInheritHandle;
 } SECURITY_ATTRIBUTES;
+
+// Asynchronous I/O: the Linux file layer is synchronous, so this is a marker the runtime may pass around.
+typedef struct { LARGE_INTEGER EndOfFile; } FILE_END_OF_FILE_INFO;
+typedef struct {
+    DWORD dwFileAttributes;
+    FILETIME ftCreationTime, ftLastAccessTime, ftLastWriteTime;
+    DWORD dwVolumeSerialNumber;
+    DWORD nFileSizeHigh, nFileSizeLow;
+    DWORD nNumberOfLinks;
+    DWORD nFileIndexHigh, nFileIndexLow;
+} BY_HANDLE_FILE_INFORMATION;
+BOOL GetFileInformationByHandle(HANDLE h, BY_HANDLE_FILE_INFORMATION *info);
+typedef enum { FileBasicInfo = 0, FileStandardInfo = 1, FileNameInfo = 2, FileRenameInfo = 3, FileDispositionInfo = 4,
+               FileAllocationInfo = 5, FileEndOfFileInfo = 6 } FILE_INFO_BY_HANDLE_CLASS;
+BOOL SetFileInformationByHandle(HANDLE h, FILE_INFO_BY_HANDLE_CLASS cls, void *info, DWORD size);
+
+typedef struct {
+    ULONG_PTR Internal;
+    ULONG_PTR InternalHigh;
+    union {
+        struct { DWORD Offset; DWORD OffsetHigh; };
+        void *Pointer;
+    };
+    HANDLE hEvent;
+} OVERLAPPED;
 
 int MultiByteToWideChar(UINT cp, DWORD flags, const char *in, int in_len, WCHAR *out, int out_cap);
 int WideCharToMultiByte(UINT cp, DWORD flags, const WCHAR *in, int in_len, char *out, int out_cap, const char *def,
@@ -384,6 +546,8 @@ typedef struct {
 } PROCESS_MEMORY_COUNTERS_EX;
 BOOL GetProcessMemoryInfo(HANDLE proc, PROCESS_MEMORY_COUNTERS *pmc, DWORD cb);
 BOOL K32GetProcessMemoryInfo(HANDLE proc, PROCESS_MEMORY_COUNTERS *pmc, DWORD cb);
+typedef struct { LPVOID lpBaseOfDll; DWORD SizeOfImage; LPVOID EntryPoint; } MODULEINFO;
+BOOL GetModuleInformation(HANDLE proc, HMODULE mod, MODULEINFO *info, DWORD cb);
 
 // ---- SHA-256 (bcrypt.h) — the runtime hashes the RomFS index at start
 
@@ -419,6 +583,7 @@ BOOL Thread32Next(HANDLE snap, THREADENTRY32 *te);
 // ---- MSVC CRT helpers
 
 char *_strdup(const char *s);
+WCHAR *_wcsdup(const WCHAR *s);
 void *_aligned_malloc(size_t size, size_t align);
 void *_aligned_realloc(void *p, size_t size, size_t align);
 void _aligned_free(void *p);
@@ -427,7 +592,6 @@ BOOL GetHandleInformation(HANDLE h, DWORD *flags);
 BOOL InitOnceBeginInitialize(PINIT_ONCE once, DWORD flags, BOOL *pending, void **ctx);
 BOOL InitOnceComplete(PINIT_ONCE once, DWORD flags, void *ctx);
 int GetUserDefaultLocaleName(WCHAR *out, int cap);
-typedef struct { DWORD dwFileAttributes; WCHAR cFileName[MAX_PATH]; } WIN32_FIND_DATAA;
 
 // ---- wide-string helpers the MSVC CRT provides
 

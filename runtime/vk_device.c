@@ -41,8 +41,15 @@ static int layer_present(const char *name) {
     return found;
 }
 
+#if defined(_WIN32)
+#define TOTK_VK_SURFACE_EXTENSION_NAME VK_KHR_WIN32_SURFACE_EXTENSION_NAME
+#else
+#include <SDL3/SDL_vulkan.h>
+#define TOTK_VK_SURFACE_EXTENSION_NAME VK_KHR_XCB_SURFACE_EXTENSION_NAME
+#endif
+
 static int create_instance(void) {
-    const char *ext[4] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME};
+    const char *ext[4] = {VK_KHR_SURFACE_EXTENSION_NAME, TOTK_VK_SURFACE_EXTENSION_NAME};
     uint32_t n_ext = 2;
     const char *layers[] = {"VK_LAYER_KHRONOS_validation"};
     int validate = cfg_bool("TOTK_VK_VALIDATION");
@@ -91,11 +98,20 @@ static const char *missing_required(VkPhysicalDevice pd) {
     return miss;
 }
 
-// Graphics+compute family that can present on win32.
+// A graphics+compute family that can present to the window. Windows asks the Win32 surface; Linux asks SDL3, which
+// knows whether the current video driver gave the device a way to present (XCB under X11, Wayland under Wayland).
+static int family_presents(VkPhysicalDevice pd, uint32_t family) {
+#if defined(_WIN32)
+    return vkGetPhysicalDeviceWin32PresentationSupportKHR(pd, family);
+#else
+    return SDL_Vulkan_GetPresentationSupport(g_vk.instance, pd, family);
+#endif
+}
+
 static uint32_t find_gfx_family(VkPhysicalDevice pd, const VkQueueFamilyProperties *qp, uint32_t nq) {
     for (uint32_t i = 0; i < nq; i++)
         if ((qp[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && (qp[i].queueFlags & VK_QUEUE_COMPUTE_BIT) &&
-            vkGetPhysicalDeviceWin32PresentationSupportKHR(pd, i))
+            family_presents(pd, i))
             return i;
     return UINT32_MAX;
 }

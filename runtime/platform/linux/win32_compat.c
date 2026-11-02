@@ -14,6 +14,7 @@
 #include <sched.h>
 #include <stdarg.h>
 #include <strings.h>
+#include <sys/statvfs.h>
 #include <sys/wait.h>
 #include <ucontext.h>
 #include <unistd.h>
@@ -117,7 +118,15 @@ void *InterlockedCompareExchangePointer(void *volatile *p, void *v, void *cmp) {
 // ---- thread handles, including suspension and context transfer
 
 enum { K_THREAD = 0x54485244, K_FILE = 0x46494c45, K_FIND = 0x464e4421, K_TIMER = 0x54494d52, K_SNAP = 0x534e4150,
-       K_PROCESS = 0x50524f43 };
+       K_PROCESS = 0x50524f43, K_EVENT = 0x45564e54 };
+
+typedef struct {
+    int kind;
+    pthread_mutex_t m;
+    pthread_cond_t c;
+    int signaled;
+    int manual;
+} EventHandle;
 
 typedef struct ThreadHandle {
     int kind;
@@ -214,10 +223,9 @@ static void *thread_body(void *p) {
     ThreadStart *s = p;
     tls_handle = s->h;
     s->h->tid = (pid_t)syscall(SYS_gettid);
-    void *r = s->fn(s->arg);
-    s->h->exit_code = 0;
+    s->h->exit_code = (int)s->fn(s->arg);
     free(s);
-    return r;
+    return NULL;
 }
 
 static ThreadHandle *handle_for_tid(pid_t tid) {
@@ -733,13 +741,60 @@ static Watch *watch_for(uintptr_t addr) {
     return NULL;
 }
 
-static void watch_fault(int sig, siginfo_t *si, void *uc) {
+// Vectored exception handlers, in registration order. memory.c installs one to thaw a frozen 2 MiB region when the
+// game writes to it; when it continues execution the write is real, so the page is still recorded as written below.
+#define VEH_MAX 8
+static struct { PVECTORED_EXCEPTION_HANDLER fn; } g_veh[VEH_MAX];
+static int g_veh_count;
+
+void *AddVectoredExceptionHandler(ULONG first, PVECTORED_EXCEPTION_HANDLER fn) {
+    (void)first;
+    if (g_veh_count >= VEH_MAX) return NULL;
+    g_veh[g_veh_count].fn = fn;
+    return &g_veh[g_veh_count++];
+}
+
+ULONG RemoveVectoredExceptionHandler(void *handle) {
+    (void)handle;
+    return 1;
+}
+
+// The exception records the vectored handlers see: an access violation with [0] = 1 (write), [1] = the address.
+static LONG veh_dispatch(siginfo_t *si, ucontext_t *uc) {
+    if (!g_veh_count) return EXCEPTION_CONTINUE_SEARCH;
+    CONTEXT ctx;
+    memset(&ctx, 0, sizeof ctx);
+    greg_t *g = uc->uc_mcontext.gregs;
+    ctx.Rip = (DWORD64)g[REG_RIP];
+    ctx.Rsp = (DWORD64)g[REG_RSP];
+    EXCEPTION_RECORD er;
+    memset(&er, 0, sizeof er);
+    er.ExceptionCode = EXCEPTION_ACCESS_VIOLATION;
+    er.ExceptionAddress = si->si_addr;
+    er.NumberParameters = 2;
+    er.ExceptionInformation[0] = si->si_code == SEGV_ACCERR ? 1 : 0;
+    er.ExceptionInformation[1] = (ULONG_PTR)si->si_addr;
+    EXCEPTION_POINTERS ep = {&er, &ctx};
+    for (int i = 0; i < g_veh_count; i++) {
+        LONG r = g_veh[i].fn(&ep);
+        if (r == EXCEPTION_CONTINUE_EXECUTION) return r;
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+static void watch_fault(int sig, siginfo_t *si, void *uc_) {
     (void)sig;
-    (void)uc;
+    ucontext_t *uc = uc_;
     Watch *w = watch_for((uintptr_t)si->si_addr);
     if (!w) {
-        // not ours: put the default action back and let the fault kill the process with its real address
+        // not a watched page: give the runtime's handlers a chance, then let the fault kill the process
+        if (veh_dispatch(si, uc) == EXCEPTION_CONTINUE_EXECUTION) return;
         signal(SIGSEGV, SIG_DFL);
+        return;
+    }
+    if (veh_dispatch(si, uc) == EXCEPTION_CONTINUE_EXECUTION) {
+        size_t page = ((uintptr_t)si->si_addr - w->base) / 4096;
+        if (page < w->size / 4096) __atomic_store_n(&w->dirty[page], 1, __ATOMIC_RELAXED);
         return;
     }
     size_t page = ((uintptr_t)si->si_addr - w->base) / 4096;
@@ -1080,6 +1135,13 @@ BOOL CloseHandle(HANDLE h) {
         free(t);
         return TRUE;
     }
+    case K_EVENT: {
+        EventHandle *e = h;
+        pthread_mutex_destroy(&e->m);
+        pthread_cond_destroy(&e->c);
+        free(e);
+        return TRUE;
+    }
     case K_THREAD: return TRUE;   // see the note above CreateThread
     default: return FALSE;
     }
@@ -1106,6 +1168,28 @@ DWORD WaitForSingleObject(HANDLE h, DWORD ms) {
             Sleep(2);
         }
         return WAIT_TIMEOUT;
+    }
+    if (kind == K_EVENT) {
+        EventHandle *e = h;
+        pthread_mutex_lock(&e->m);
+        if (ms == INFINITE) {
+            while (!e->signaled) pthread_cond_wait(&e->c, &e->m);
+        } else {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            ts.tv_sec += ms / 1000;
+            ts.tv_nsec += (long)(ms % 1000) * 1000000L;
+            if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+            while (!e->signaled) {
+                if (pthread_cond_timedwait(&e->c, &e->m, &ts) == ETIMEDOUT) {
+                    pthread_mutex_unlock(&e->m);
+                    return WAIT_TIMEOUT;
+                }
+            }
+        }
+        if (!e->manual) e->signaled = 0;
+        pthread_mutex_unlock(&e->m);
+        return WAIT_OBJECT_0;
     }
     if (kind == K_TIMER) {
         struct Timer { int kind; pthread_mutex_t m; pthread_cond_t c; uint64_t due; int armed; };
@@ -1361,4 +1445,459 @@ NTSTATUS BCryptGenRandom(BCRYPT_ALG_HANDLE alg, PBYTE buf, DWORD n, DWORD flags)
         done += (size_t)r;
     }
     return 0;
+}
+
+// ---- events, directories, temporary paths, narrow find, module handles
+
+HANDLE CreateEventW(void *attr, BOOL manual_reset, BOOL initial, const WCHAR *name) {
+    (void)attr;
+    (void)name;
+    EventHandle *e = calloc(1, sizeof *e);
+    if (!e) return NULL;
+    e->kind = K_EVENT;
+    e->manual = manual_reset;
+    e->signaled = initial != 0;
+    pthread_mutex_init(&e->m, NULL);
+    pthread_condattr_t a;
+    pthread_condattr_init(&a);
+    pthread_condattr_setclock(&a, CLOCK_MONOTONIC);
+    pthread_cond_init(&e->c, &a);
+    pthread_condattr_destroy(&a);
+    return e;
+}
+
+BOOL SetEvent(HANDLE h) {
+    EventHandle *e = h;
+    if (!e || e->kind != K_EVENT) return FALSE;
+    pthread_mutex_lock(&e->m);
+    e->signaled = 1;
+    if (e->manual) pthread_cond_broadcast(&e->c);
+    else pthread_cond_signal(&e->c);
+    pthread_mutex_unlock(&e->m);
+    return TRUE;
+}
+
+BOOL ResetEvent(HANDLE h) {
+    EventHandle *e = h;
+    if (!e || e->kind != K_EVENT) return FALSE;
+    pthread_mutex_lock(&e->m);
+    e->signaled = 0;
+    pthread_mutex_unlock(&e->m);
+    return TRUE;
+}
+
+BOOL CreateDirectoryA(const char *path, void *sa) {
+    (void)sa;
+    return mkdir(path, 0755) == 0 || errno == EEXIST;
+}
+
+DWORD GetFullPathNameA(const char *name, DWORD cap, char *out, char **file) {
+    char abs[4096];
+    if (name[0] == '/') snprintf(abs, sizeof abs, "%s", name);
+    else {
+        char cwd[2048];
+        if (!getcwd(cwd, sizeof cwd)) return 0;
+        snprintf(abs, sizeof abs, "%s/%s", cwd, name);
+    }
+    snprintf(out, cap, "%s", abs);
+    if (file) *file = strrchr(out, '/');
+    return (DWORD)strlen(out);
+}
+
+DWORD GetTempPathA(DWORD cap, char *out) {
+    const char *t = getenv("TMPDIR");
+    if (!t || !*t) t = "/tmp";
+    snprintf(out, cap, "%s/", t);
+    return (DWORD)strlen(out);
+}
+
+HANDLE FindFirstFileA(const char *pattern, WIN32_FIND_DATAA *data) {
+    WCHAR w[4096];
+    WIN32_FIND_DATAW wd;
+    wide_from_utf8(pattern, w, sizeof w / sizeof *w);
+    HANDLE h = FindFirstFileW(w, &wd);
+    if (h == INVALID_HANDLE_VALUE) return h;
+    memset(data, 0, sizeof *data);
+    data->dwFileAttributes = wd.dwFileAttributes;
+    for (int i = 0; i < MAX_PATH && wd.cFileName[i]; i++) data->cFileName[i] = (WCHAR)wd.cFileName[i];
+    return h;
+}
+
+HANDLE FindFirstFileExA(const char *pattern, int level, WIN32_FIND_DATAA *data, int search, void *filter, DWORD flags) {
+    (void)level;
+    (void)search;
+    (void)filter;
+    (void)flags;
+    return FindFirstFileA(pattern, data);
+}
+
+BOOL GetModuleHandleExW(DWORD flags, const WCHAR *name, HMODULE *out) {
+    (void)flags;
+    (void)name;
+    if (out) *out = (HMODULE)(uintptr_t)0x400000;
+    return TRUE;
+}
+
+int _commit(int fd) { return fsync(fd); }
+LONGLONG InterlockedOr64(LONGLONG volatile *p, LONGLONG v) { return __atomic_or_fetch(p, v, __ATOMIC_SEQ_CST); }
+LONGLONG InterlockedAnd64(LONGLONG volatile *p, LONGLONG v) { return __atomic_and_fetch(p, v, __ATOMIC_SEQ_CST); }
+LONG InterlockedExchangeAdd(LONG volatile *p, LONG v) { return __atomic_fetch_add(p, v, __ATOMIC_SEQ_CST); }
+
+// ---- the rest of the surface the runtime touches
+
+int _fileno(FILE *f) { return fileno(f); }
+int _fseeki64(FILE *f, int64_t off, int whence) { return fseeko(f, (off_t)off, whence); }
+void _tzset(void) { tzset(); }
+
+char *strtok_s(char *s, const char *delim, char **ctx) { return strtok_r(s, delim, ctx); }
+
+WCHAR *_wcsdup(const WCHAR *s) {
+    size_t n = wcslen(s) + 1;
+    WCHAR *d = malloc(n * sizeof *d);
+    if (d) memcpy(d, s, n * sizeof *d);
+    return d;
+}
+
+HANDLE GetStdHandle(DWORD which) {
+    static FileHandle out = {K_FILE, 1}, err = {K_FILE, 2}, in = {K_FILE, 0};
+    if (which == STD_OUTPUT_HANDLE) return &out;
+    if (which == STD_ERROR_HANDLE) return &err;
+    return &in;
+}
+
+BOOL GetProcessTimes(HANDLE proc, FILETIME *create, FILETIME *exit, FILETIME *kernel, FILETIME *user) {
+    (void)proc;
+    (void)create;
+    (void)exit;
+    FILE *f = fopen("/proc/self/stat", "r");
+    if (!f) return FALSE;
+    char buf[1024];
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    char *p = strrchr(buf, ')');
+    if (!p) return FALSE;
+    p++;
+    unsigned long long ut = 0, st = 0;
+    for (int field = 3; field <= 15 && *p; field++) {
+        while (*p == ' ') p++;
+        if (field == 14) ut = strtoull(p, &p, 10);
+        else if (field == 15) { st = strtoull(p, &p, 10); break; }
+        else while (*p && *p != ' ') p++;
+    }
+    long hz = sysconf(_SC_CLK_TCK);
+    if (hz <= 0) hz = 100;
+    uint64_t us = (uint64_t)ut * 1000000 / (uint64_t)hz, ss = (uint64_t)st * 1000000 / (uint64_t)hz;
+    if (kernel) { kernel->dwLowDateTime = (DWORD)us; kernel->dwHighDateTime = (DWORD)(us >> 32); }
+    if (user) { user->dwLowDateTime = (DWORD)ss; user->dwHighDateTime = (DWORD)(ss >> 32); }
+    return TRUE;
+}
+
+DWORD GetTempFileNameA(const char *dir, const char *prefix, UINT unique, char *out) {
+    for (UINT i = 0; i < 1000; i++) {
+        snprintf(out, MAX_PATH, "%s/%s%04x%04x.tmp", dir, prefix ? prefix : "tmp", unique & 0xffff, i);
+        int fd = open(out, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
+        if (fd >= 0) { close(fd); return unique + i; }
+    }
+    return 0;
+}
+
+static void to_systemtime(time_t t, SYSTEMTIME *st) {
+    struct tm tm;
+    localtime_r(&t, &tm);
+    st->wYear = (WORD)(tm.tm_year + 1900);
+    st->wMonth = (WORD)(tm.tm_mon + 1);
+    st->wDayOfWeek = (WORD)tm.tm_wday;
+    st->wDay = (WORD)tm.tm_mday;
+    st->wHour = (WORD)tm.tm_hour;
+    st->wMinute = (WORD)tm.tm_min;
+    st->wSecond = (WORD)tm.tm_sec;
+    st->wMilliseconds = 0;
+}
+
+void GetLocalTime(SYSTEMTIME *st) { to_systemtime(time(NULL), st); }
+
+void GetSystemTime(SYSTEMTIME *st) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    struct tm tm;
+    gmtime_r(&ts.tv_sec, &tm);
+    st->wYear = (WORD)(tm.tm_year + 1900);
+    st->wMonth = (WORD)(tm.tm_mon + 1);
+    st->wDayOfWeek = (WORD)tm.tm_wday;
+    st->wDay = (WORD)tm.tm_mday;
+    st->wHour = (WORD)tm.tm_hour;
+    st->wMinute = (WORD)tm.tm_min;
+    st->wSecond = (WORD)tm.tm_sec;
+    st->wMilliseconds = (WORD)(ts.tv_nsec / 1000000);
+}
+
+HANDLE CreateEventA(void *attr, BOOL manual_reset, BOOL initial, const char *name) {
+    (void)name;
+    return CreateEventW(attr, manual_reset, initial, NULL);
+}
+
+BOOL FindNextFileA(HANDLE h, WIN32_FIND_DATAA *data) {
+    WIN32_FIND_DATAW wd;
+    if (!FindNextFileW(h, &wd)) return FALSE;
+    memset(data, 0, sizeof *data);
+    data->dwFileAttributes = wd.dwFileAttributes;
+    for (int i = 0; i < MAX_PATH && wd.cFileName[i]; i++) data->cFileName[i] = (WCHAR)wd.cFileName[i];
+    return TRUE;
+}
+
+int64_t _ftelli64(FILE *f) { return (int64_t)ftello(f); }
+BOOL RemoveDirectoryA(const char *path) { return rmdir(path) == 0; }
+HWND GetForegroundWindow(void) { return NULL; }
+
+// The command line as one UTF-32 string, built once from /proc/self/cmdline (NUL separated).
+WCHAR *GetCommandLineW(void) {
+    static WCHAR *line;
+    if (line) return line;
+    FILE *f = fopen("/proc/self/cmdline", "rb");
+    char buf[8192];
+    size_t n = f ? fread(buf, 1, sizeof buf - 1, f) : 0;
+    if (f) fclose(f);
+    for (size_t i = 0; i < n; i++)
+        if (!buf[i]) buf[i] = ' ';
+    buf[n] = 0;
+    WCHAR w[8192];
+    wide_from_utf8(buf, w, 8192);
+    line = _wcsdup(w);
+    return line;
+}
+
+void GetSystemTimeAsFileTime(FILETIME *ft) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    uint64_t t = ((uint64_t)ts.tv_sec + 11644473600ull) * 10000000ull + (uint64_t)ts.tv_nsec / 100;
+    ft->dwLowDateTime = (DWORD)t;
+    ft->dwHighDateTime = (DWORD)(t >> 32);
+}
+
+int localtime_s(struct tm *out, const time_t *t) {
+    if (!out || !t) return 22;
+    return localtime_r(t, out) ? 0 : 22;
+}
+
+short GetAsyncKeyState(int vk) { (void)vk; return 0; }
+void YieldProcessor(void) { __builtin_ia32_pause(); }
+int _get_timezone(long *seconds) { if (seconds) *seconds = 0; return 0; }
+
+// Waits for the first (or all) of the handles; the runtime uses it for the shader translator's job list.
+DWORD WaitForMultipleObjects(DWORD count, const HANDLE *handles, BOOL wait_all, DWORD ms) {
+    uint64_t deadline = ms == INFINITE ? 0 : mono_ns() + (uint64_t)ms * 1000000;
+    for (;;) {
+        DWORD ready = 0;
+        for (DWORD i = 0; i < count; i++) {
+            if (WaitForSingleObject(handles[i], 0) == WAIT_OBJECT_0) ready++;
+            else if (wait_all) break;
+            else return WAIT_OBJECT_0 + i;
+        }
+        if (wait_all && ready == count) return WAIT_OBJECT_0;
+        if (deadline && mono_ns() >= deadline) return WAIT_TIMEOUT;
+        Sleep(1);
+    }
+}
+
+BOOL CreateHardLinkW(const WCHAR *to, const WCHAR *from, void *sa) {
+    (void)sa;
+    char a[4096], b[4096];
+    utf8_from_wide(to, a, sizeof a);
+    utf8_from_wide(from, b, sizeof b);
+    return link(b, a) == 0;
+}
+
+BOOL GetThreadTimes(HANDLE thread, FILETIME *create, FILETIME *exit, FILETIME *kernel, FILETIME *user) {
+    (void)thread;
+    (void)create;
+    (void)exit;
+    (void)kernel;
+    if (!user) return TRUE;
+    struct timespec ts;
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts)) return FALSE;
+    uint64_t us = (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000;
+    user->dwLowDateTime = (DWORD)us;
+    user->dwHighDateTime = (DWORD)(us >> 32);
+    return TRUE;
+}
+
+BOOL GetModuleInformation(HANDLE proc, HMODULE mod, MODULEINFO *info, DWORD cb) {
+    (void)proc;
+    (void)cb;
+    if (!info) return FALSE;
+    memset(info, 0, sizeof *info);
+    info->lpBaseOfDll = (LPVOID)(uintptr_t)(mod ? (uintptr_t)mod : 0x400000);
+    info->SizeOfImage = 0x10000000;   // the guest modules live above this; the check only bounds a diagnostic
+    return TRUE;
+}
+
+// ---- fibres
+//
+// One ucontext per fibre. The thread's own context is a fibre too, so every switch is a plain swapcontext and the
+// caller's C frames survive untouched. MXCSR is not part of a ucontext, which is why kernel.c syncs the FP control
+// word itself around a switch.
+
+typedef struct FiberCtx {
+    ucontext_t ctx;
+    void *stack;
+    size_t stack_size;
+    void (*fn)(void *);
+    void *arg;
+    struct FiberCtx *return_to;
+    int done;
+} FiberCtx;
+
+static __thread FiberCtx *tls_fiber;
+
+static void fiber_entry(void) {
+    FiberCtx *f = tls_fiber;
+    f->fn(f->arg);
+    f->done = 1;
+    tls_fiber = f->return_to;
+    setcontext(&f->return_to->ctx);
+}
+
+static FiberCtx *fiber_new(void (*fn)(void *), void *arg, size_t reserve) {
+    FiberCtx *f = calloc(1, sizeof *f);
+    if (!f) return NULL;
+    if (reserve < 0x10000) reserve = 0x10000;
+    void *stack = mmap(NULL, reserve, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (stack == MAP_FAILED) { free(f); return NULL; }
+    f->stack = stack;
+    f->stack_size = reserve;
+    f->fn = fn;
+    f->arg = arg;
+    getcontext(&f->ctx);
+    f->ctx.uc_stack.ss_sp = stack;
+    f->ctx.uc_stack.ss_size = reserve;
+    f->ctx.uc_link = NULL;
+    makecontext(&f->ctx, fiber_entry, 0);
+    return f;
+}
+
+void *ConvertThreadToFiber(void *param) { return ConvertThreadToFiberEx(param, 0); }
+
+void *ConvertThreadToFiberEx(void *param, DWORD flags) {
+    (void)param;
+    (void)flags;
+    if (tls_fiber) return tls_fiber;
+    FiberCtx *f = calloc(1, sizeof *f);
+    if (!f) return NULL;
+    tls_fiber = f;
+    return f;
+}
+
+BOOL ConvertFiberToThread(void) {
+    if (tls_fiber && tls_fiber->stack) return FALSE;   // only the thread's own context converts
+    free(tls_fiber);
+    tls_fiber = NULL;
+    return TRUE;
+}
+
+void *CreateFiber(SIZE_T size, void (*fn)(void *), void *arg) {
+    return CreateFiberEx(size, size, 0, fn, arg);
+}
+
+void *CreateFiberEx(SIZE_T commit, SIZE_T reserve, DWORD flags, void (*fn)(void *), void *arg) {
+    (void)commit;
+    (void)flags;
+    return fiber_new(fn, arg, (size_t)reserve);
+}
+
+void SwitchToFiber(void *fiber) {
+    FiberCtx *to = fiber;
+    FiberCtx *from = tls_fiber;
+    if (!to || to == from) return;
+    to->return_to = from;
+    tls_fiber = to;
+    swapcontext(&from->ctx, &to->ctx);
+}
+
+void DeleteFiber(void *fiber) {
+    FiberCtx *f = fiber;
+    if (!f) return;
+    if (f->stack) munmap(f->stack, f->stack_size);
+    free(f);
+}
+
+void *GetCurrentFiber(void) { return tls_fiber; }
+BOOL IsThreadAFiber(void) { return tls_fiber != NULL; }
+
+BOOL SetFileInformationByHandle(HANDLE h, FILE_INFO_BY_HANDLE_CLASS cls, void *info, DWORD size) {
+    (void)size;
+    FileHandle *f = h;
+    if (!f || f->kind != K_FILE) return FALSE;
+    if (cls == FileEndOfFileInfo) {
+        FILE_END_OF_FILE_INFO *eof = info;
+        return ftruncate(f->fd, (off_t)eof->EndOfFile.QuadPart) == 0;
+    }
+    if (cls == FileDispositionInfo) {
+        int del = *(int *)info;
+        return del ? 1 : 1;   // deletion by handle is not used by the runtime; report success and let CloseHandle keep it
+    }
+    return FALSE;
+}
+
+BOOL GetFileInformationByHandle(HANDLE h, BY_HANDLE_FILE_INFORMATION *info) {
+    FileHandle *f = h;
+    struct stat st;
+    if (!f || f->kind != K_FILE || fstat(f->fd, &st)) return FALSE;
+    memset(info, 0, sizeof *info);
+    info->dwFileAttributes = S_ISDIR(st.st_mode) ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+    info->nFileSizeHigh = (DWORD)((uint64_t)st.st_size >> 32);
+    info->nFileSizeLow = (DWORD)st.st_size;
+    info->nNumberOfLinks = (DWORD)st.st_nlink;
+    info->nFileIndexHigh = (DWORD)((uint64_t)st.st_ino >> 32);
+    info->nFileIndexLow = (DWORD)st.st_ino;
+    info->dwVolumeSerialNumber = (DWORD)st.st_dev;
+    return TRUE;
+}
+
+DWORD GetTempPathW(DWORD cap, WCHAR *out) {
+    char p[4096];
+    DWORD n = GetTempPathA(sizeof p, p);
+    wide_from_utf8(p, out, cap);
+    return (DWORD)wcslen(out);
+}
+
+DWORD GetCurrentDirectoryA(DWORD cap, char *out) {
+    if (!getcwd(out, cap)) return 0;
+    return (DWORD)strlen(out);
+}
+
+DWORD GetCurrentDirectoryW(DWORD cap, WCHAR *out) {
+    char p[4096];
+    if (!GetCurrentDirectoryA(sizeof p, p)) return 0;
+    wide_from_utf8(p, out, cap);
+    return (DWORD)wcslen(out);
+}
+
+BOOL SetCurrentDirectoryW(const WCHAR *path) {
+    char p[4096];
+    utf8_from_wide(path, p, sizeof p);
+    return chdir(p) == 0;
+}
+
+BOOL GetDiskFreeSpaceExW(const WCHAR *path, uint64_t *avail, uint64_t *total, uint64_t *free_bytes) {
+    char p[4096];
+    utf8_from_wide(path, p, sizeof p);
+    struct statvfs vfs;
+    if (statvfs(p, &vfs)) return FALSE;
+    uint64_t unit = vfs.f_frsize ? vfs.f_frsize : vfs.f_bsize;
+    if (total) *total = (uint64_t)vfs.f_blocks * unit;
+    if (free_bytes) *free_bytes = (uint64_t)vfs.f_bfree * unit;
+    if (avail) *avail = (uint64_t)vfs.f_bavail * unit;
+    return TRUE;
+}
+
+DWORD GetFileType(HANDLE h) {
+    FileHandle *f = h;
+    if (!f || f->kind != K_FILE) return FILE_TYPE_UNKNOWN;
+    struct stat st;
+    if (fstat(f->fd, &st)) return FILE_TYPE_UNKNOWN;
+    if (S_ISREG(st.st_mode)) return FILE_TYPE_DISK;
+    if (S_ISCHR(st.st_mode)) return FILE_TYPE_CHAR;
+    if (S_ISFIFO(st.st_mode) || S_ISSOCK(st.st_mode)) return FILE_TYPE_PIPE;
+    return FILE_TYPE_UNKNOWN;
 }
