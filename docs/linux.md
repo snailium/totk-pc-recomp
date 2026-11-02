@@ -222,6 +222,15 @@ Acceptance for each item is a command that fails before and passes after.
       `oe_push_message(OE_MSG_FOCUS_STATE_CHANGED)` at window start. On its own it does not unblock the boot, because
       `oe_push_message` only appends to the runtime's applet queue; it signals no event, and the guest waits on the
       event its own `nn::os::CreateSystemEvent` made with no timeout at all.
+- [x] the port runs the game: on the BC-250 the boot reaches the world clock (`world clock starts at present 481, the
+      player at 65.3 35.5 -192.5`), the frame dumps show the rendered title screen, and the window presents through
+      Wayland (`gfx: window 1920x1080, swapchain 1920x1006`, `flips 600`). Two bugs stood in the way: the Linux critical
+      sections were not recursive (a self-deadlock in `vk_staging` on the first texture upload of a replay), and
+      `WaitForSingleObject` on a thread handle never reported a finished thread for a zero timeout (the boot prewarm hung
+      on 187 shaders that were all done).
+- [ ] the frame rate is 2.5 fps and the loading screen never finishes because textures are re-uploaded every frame:
+      21,504 uploads in 150 s, each with a new page generation. The mirror writeback writes GPU results into guest memory
+      under the write watch, so the port's own writeback looks like a CPU write and every texture is decoded again.
 - [x] with the applet event signalled, the wait moves and the next blocker names itself: the main thread (0x1001) joins
       thread 0x1004, and 0x1004 sits inside `nvn:nvnQueueSubmitCommands`, blocked on a process-wide key at an alias-region
       address (`0x33312120`), while the main thread waits in `InternalCriticalSectionImplByHorizon::Enter`. The NVN replay

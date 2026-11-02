@@ -548,6 +548,11 @@ static void astc_check(const Tex *e, const uint8_t *raw, const VkAstcRegion *ar,
 // Copies the whole storage into the image (every level and layer the image has).
 static void upload(Tex *e) {
     static volatile long n_bad, n_undecoded;
+    static volatile long n_uploads;
+    long nu = InterlockedIncrement(&n_uploads);
+    if (nu % 512 == 0)
+        rt_log("vk: upload %ld: %#llx %ux%u astc %d gen %u", nu, (unsigned long long)e->pub.addr, e->t.d.width,
+               e->t.d.height, e->f.astc_bw != 0, e->wgen);
     const tex_t *t = &e->t;
     const nvn_texdesc *d = &t->d;
     int bw, bh, bpb = nvn_fmt_bpb(d->format, &bw, &bh);
@@ -829,6 +834,25 @@ void vk_texture_debug(const VkTexImage *img, uint32_t *uploads, int *last_change
     *last_change = e->last_ch;
     *pages_written = e->pub.mirrored && e->uploaded ? vk_mem_changed(e->pub.addr, e->t.L.size, e->wgen, &now) : 0;
     unlock();
+}
+
+// TOTK_PRESENT_LOG=1: what the entry behind a presented texture knows about writes to its image. wr_fence 0 with no
+// siblings means nothing in the replay ever wrote it; a sibling means another object at the same storage address is the
+// one that got the pixels.
+void vk_texture_present_debug(const tex_t *t) {
+    if (!getenv("TOTK_PRESENT_LOG")) return;
+    static unsigned long long logged;
+    if (logged++ >= 4) return;
+    Tex *e = (Tex *)vk_texture_get(t);
+    if (!e) {
+        rt_log("gfx: present %p (%#llx): no image", (const void *)t, t ? (unsigned long long)t->mem : 0ull);
+        return;
+    }
+    int sib = 0;
+    for (Tex *o = e->next_at; o; o = o->next_at) sib++;
+    rt_log("gfx: present %p addr %#llx fmt %#x %ux%u: wr_fence %llu, uploaded %d, gpu_dirty %d, uploads %u, siblings %d",
+           (const void *)t, (unsigned long long)e->pub.addr, (unsigned)e->t.d.format, e->t.d.width, e->t.d.height,
+           (unsigned long long)e->wr_fence, e->uploaded, e->gpu_dirty, e->n_up, sib);
 }
 
 const VkTexImage *vk_texture_get(const tex_t *t) {

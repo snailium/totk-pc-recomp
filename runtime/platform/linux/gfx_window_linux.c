@@ -257,8 +257,13 @@ void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int
                               g_sc_ext.height, (int)g_sc_fmt);
     // TOTK_BLIT_DUMP=1: write the image the blit reads to /tmp/blit_src.ppm, once. A red swapchain clear proves the
     // present path works; this proves what the blit was given.
-    if (getenv("TOTK_BLIT_DUMP")) {
+    const char *blit_dump = getenv("TOTK_BLIT_DUMP");
+    if (blit_dump && *blit_dump) {
+        static unsigned long long presents_seen;
         static int done;
+        // Dump at the present named by the value (default the first): a black first frame says nothing about later ones.
+        unsigned long long want = (unsigned long long)strtoull(blit_dump, NULL, 10);
+        if (want && ++presents_seen < want) goto skip_dump;
         if (!done) {
             done = 1;
             VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = (VkDeviceSize)w * h * 4,
@@ -306,6 +311,7 @@ void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int
             }
         }
     }
+skip_dump:
     // TOTK_PRESENT_TEST=1: clear the swapchain image instead of blitting, to tell a broken blit from a broken present.
     if (getenv("TOTK_PRESENT_TEST")) {
         static const VkClearColorValue red = {{1.0f, 0.0f, 0.0f, 1.0f}};
