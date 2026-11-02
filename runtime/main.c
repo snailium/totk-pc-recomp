@@ -320,6 +320,14 @@ static LONG CALLBACK crash_handler(EXCEPTION_POINTERS *ep) {
     } else {
         rt_logf("  not on a guest thread\n");
     }
+    if (c) {
+        rt_logf("  guest stack at sp:\n");
+        for (int i = 0; i < 24; i += 2) {
+            uint64_t a = c->sp + (uint64_t)i * 8;
+            if (!readable(a, 16)) break;
+            rt_logf("   +%02x %016llx %016llx\n", i * 8, (unsigned long long)LD64(a), (unsigned long long)LD64(a + 8));
+        }
+    }
     rt_lastcalls_dump(32);
     fflush(stderr);
     ExitProcess(71);
