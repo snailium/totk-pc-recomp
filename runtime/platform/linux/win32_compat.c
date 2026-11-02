@@ -326,7 +326,10 @@ HANDLE OpenThread(DWORD access, BOOL inherit, DWORD tid) {
     (void)access;
     (void)inherit;
     ThreadHandle *h = handle_for_tid((pid_t)tid);
-    return h ? h : NULL;
+    if (h) return h;
+    // The calling thread always has a handle: the preemption code opens its own thread by id.
+    if (tid == GetCurrentThreadId()) return GetCurrentThread();
+    return NULL;
 }
 
 BOOL SetThreadPriority(HANDLE h, int prio) {

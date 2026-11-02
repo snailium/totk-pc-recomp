@@ -12,6 +12,7 @@
 #include "gfx.h"
 #include "host.h"
 #include "input.h"
+#include "input_map.h"
 #include "platform.h"
 #include "vk.h"
 
@@ -33,8 +34,9 @@ int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly) {
     input_poll(buttons, lx, ly, NULL, NULL);
     return 1;
 }
-int input_pad_layout(void) { return -1; }
-int input_pad_label(int pad) { (void)pad; return -1; }
+// A keyboard-driven pad is always present: the host hid layer and the menu both read these.
+int input_pad_layout(void) { return PAD_LAYOUT_NINTENDO; }
+int input_pad_label(int pad) { (void)pad; return PAD_LABEL_NONE; }
 int input_rumble(uint16_t low, uint16_t high, uint32_t ms) { (void)low; (void)high; (void)ms; return 0; }
 uint16_t rumble_motor(float a, float curve, float strength) {
     (void)a; (void)curve; (void)strength;

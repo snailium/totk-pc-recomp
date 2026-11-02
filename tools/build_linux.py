@@ -151,7 +151,14 @@ def main():
         print(f'{len(failures)} file(s) failed', file=sys.stderr)
         return 1
 
-    objs = sorted(str(p) for p in obj.glob('*.o'))
+    # Host code first, generated code last: kern_ap's preemption check takes the address range of the linked guest
+    # functions as "lifted code", which only holds while nothing host-side sits between them.
+    def is_generated(path):
+        name = Path(path).name
+        return name.startswith(('main_', 'sdk_', 'subsdk0_'))
+
+    objs = sorted(str(o) for o in obj.glob('*.o') if not is_generated(o)) + \
+           sorted(str(o) for o in obj.glob('*.o') if is_generated(o))
     exe = out / 'totk'
     cmd = [CC, '-fuse-ld=lld', '-o', str(exe), *objs,
            '-Wl,-T,' + str(ROOT / 'runtime' / 'platform' / 'linux' / 'sections.ld'),

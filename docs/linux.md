@@ -141,8 +141,14 @@ Acceptance for each item is a command that fails before and passes after.
 - [ ] shader translator child process through `plat_child_*`; shader cache paths
 - [x] the renderer initialises on real hardware: with a headless Wayland compositor (`weston --backend=headless`)
       the port picks the RX 7900 XTX through RADV, creates the device, mirrors its pools and builds the ASTC decoder
-- [ ] title screen on `.101` and on BC-250 Bazzite — a guest fault (`f_70011266c4`, reached from `nnMain`) stops the
-      boot just after HID init; it reproduces with `TOTK_ASYNC_PREEMPT=0` and needs a fault-address diagnosis — blocked on a display with DRI3: `.101` has
+- [x] async preemption is active: the linker now puts all generated code after the runtime, so the "lifted code"
+      address range no longer swallows host functions (`lifted code exe+0x1e037f0-exe+0xee9f2e0`), and `OpenThread`
+      answers for the calling thread even when it was not created through `CreateThread`
+- [ ] title screen on `.101` and on BC-250 Bazzite — a guest fault remains: `f_70011266c4` is a constructor whose
+      object pointer is NULL, because the lookup in `f_70007fa8f0` (`main+0x462d000+0xeb0` singleton, then a list walk)
+      finds nothing. The fault address is `0x8`, i.e. `movb $0,(%rax+8)` with `rax = 0`. Reproduces with
+      `TOTK_ASYNC_PREEMPT=0`. Next step: capture `TOTK_TRACE=host` on the working Windows build under Wine and diff the
+      host-call sequence after `hid: controllers initialized` against the Linux one — blocked on a display with DRI3: `.101` has
       no connected output and Xvfb has no DRI3, so the port boots with `
       vk: no usable Vulkan device` and stops at graphics init
 
