@@ -56,6 +56,22 @@ Counted from the runtime (probe files excluded where they only test):
 | Window/input | `CreateWindowExW`, `GetMessageW`, `GetKeyboardState`, `SetCursor` | SDL3 (`SDL_Vulkan_CreateSurface`, SDL events); `input_map.c` is already platform-neutral |
 | Shell extras | clipboard, open folder, profiler, RenderDoc loader | `wl-copy`/`xclip`, `xdg-open`, optional |
 
+## Why a Win32 compatibility layer
+
+The runtime calls the Windows API directly in ~60 files (`SRWLOCK`, `InterlockedIncrement`, `VirtualAlloc`,
+`CreateFileW`, `SuspendThread`…). Rewriting all of them onto `platform.h` is the target design but it is weeks of work
+before anything links. The Linux branch therefore adds `runtime/platform/linux/win32_compat.{h,c}` plus shim headers
+named `windows.h`, `psapi.h`, `bcrypt.h`, `tlhelp32.h`, `timeapi.h` and `io.h`, all resolved only when
+`-I runtime/platform/linux` is on the include path.
+
+Rules for this layer:
+
+- It is Linux-only and never linked into the Windows build.
+- It forwards to POSIX and keeps Windows semantics where the runtime depends on them (lazy zero-initialised locks,
+  `GetWriteWatch` with `RESET`, `SuspendThread`/`SetThreadContext` over `ucontext`).
+- It is a bridge, not an API: files move to `platform.h` as they are touched, and the shim shrinks with them
+  (`tools/linux_compile_matrix.sh` is the scoreboard).
+
 ## The three hard parts
 
 1. **Write watch.** Three implementations, selected at startup and logged, because the fallback changes frame time by
@@ -91,6 +107,8 @@ Acceptance for each item is a command that fails before and passes after.
 - [x] branch `linux-native`, no changes to Windows behaviour
 - [ ] `tools/build_game_linux` path: clang + ninja + pkg-config, ELF, no windres; `--target linux` in `build_game.py`
       or a sibling script that emits the same object layout
+- [x] `tools/linux_compile_matrix.sh` — the scoreboard for the runtime port (31 of 65 sources compile clean today)
+- [x] `runtime/third_party/vma/vk_mem_alloc.h` vendored (3.5.0, MIT) so the Vulkan files build without an MSYS2 package
 - [ ] `tools/build_xlate.py --rid linux-x64` publishes `totk_xlate` for Linux (NativeAOT)
 - [ ] `tools/check_platform.py --root . --target linux` reports progress against the allowlist
 
@@ -102,6 +120,8 @@ Acceptance for each item is a command that fails before and passes after.
 - [x] the platform layer compiles clean with `-Wall -Wextra` under gcc, ASan run of the test (clang still to check in CI)
 
 ### M2 — runtime off Win32
+- [x] Win32 compatibility layer for the bring-up (`win32_compat.{h,c}` and the shim headers), documented above
+- [x] `vk.h` picks XCB instead of Win32 for the presentation surface; `VkNativeWindow` replaces `HWND`
 - [ ] replace the direct Win32 calls of the ~30 runtime files with `plat_*` (files, threads first, they are mechanical)
 - [ ] memory: reservation with `MAP_FIXED_NOREPLACE`, commit with `mprotect`, re-exec loop via `execv`
 - [ ] loader: ELF-free (modules are already NSO→C); only `MAP_FIXED` and the dispatch table remain

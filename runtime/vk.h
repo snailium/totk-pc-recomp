@@ -1,10 +1,20 @@
 // Vulkan-internal header of the graphics layer. Host code only; the guest never sees it.
 #pragma once
+// The presentation surface is the one part of the Vulkan layer that is per OS: Win32 on Windows, XCB on Linux (the
+// SDL3 window supplies the connection; Wayland follows if a target needs it).
+#if defined(_WIN32)
 #ifndef VK_USE_PLATFORM_WIN32_KHR
 #define VK_USE_PLATFORM_WIN32_KHR 1
 #endif
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_win32.h>
+#else
+#ifndef VK_USE_PLATFORM_XCB_KHR
+#define VK_USE_PLATFORM_XCB_KHR 1
+#endif
+#include <vulkan/vulkan.h>
+#include <vulkan/vulkan_xcb.h>
+#endif
 #include <stdint.h>
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wnullability-completeness"
@@ -97,7 +107,12 @@ void vk_queue_unlock(void);
 void vk_present_capture(int on);
 int vk_present_captured(const uint8_t **px, int *w, int *h, VkFormat *fmt);
 
-HWND gfx_window_handle(void);                      // NULL before gfx_window_start
+#if defined(_WIN32)
+typedef HWND VkNativeWindow;
+#else
+typedef void *VkNativeWindow;   // the SDL3 window; gfx_window.c owns the conversion
+#endif
+VkNativeWindow gfx_window_handle(void);             // NULL before gfx_window_start
 void gfx_window_resize(int client_w, int client_h);   // programmatic resize; returns after the swapchain is rebuilt
 void gfx_vsync_bind_counter(volatile long *counter);  // host-side stand-in for a bound event: incremented per tick
 unsigned gfx_window_focus_messages(void);          // OE_MSG_FOCUS_STATE_CHANGED pushes made by the window thread

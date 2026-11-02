@@ -1,0 +1,1364 @@
+// Implementations for win32_compat.h: POSIX underneath, Windows semantics on top.
+//
+// Two pieces carry real weight and are worth reading before the rest:
+//   * write watch — Windows tracks written pages in the kernel; here watched pages are mprotect(RD) and a SIGSEGV
+//     handler records the page, makes it writable again and returns. GetWriteWatch(RESET) reports and re-protects.
+//   * thread context — SuspendThread/GetThreadContext/SetThreadContext take a signal (SIGUSR2) on the target thread,
+//     copy its ucontext into the CONTEXT, keep the thread parked while the caller inspects it, and apply the edited
+//     register set back into the ucontext before returning. That is what kernel.c's preemption needs.
+#define _GNU_SOURCE
+#include "win32_compat.h"
+
+#include <dirent.h>
+#include <dlfcn.h>
+#include <sched.h>
+#include <stdarg.h>
+#include <strings.h>
+#include <sys/wait.h>
+#include <ucontext.h>
+#include <unistd.h>
+
+// ---- errors
+
+static __thread DWORD tls_last_error;
+
+DWORD GetLastError(void) { return tls_last_error; }
+void SetLastError(DWORD err) { tls_last_error = err; }
+
+// ---- lazily created pthread objects behind zero-initialised storage
+
+static pthread_mutex_t g_slot_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void *slot(void **p, size_t size, int is_cond) {
+    void *v = __atomic_load_n(p, __ATOMIC_ACQUIRE);
+    if (v) return v;
+    pthread_mutex_lock(&g_slot_lock);
+    v = *p;
+    if (!v) {
+        v = calloc(1, size);
+        if (v) {
+            if (is_cond) {
+                pthread_condattr_t a;
+                pthread_condattr_init(&a);
+                pthread_condattr_setclock(&a, CLOCK_MONOTONIC);
+                pthread_cond_init(v, &a);
+                pthread_condattr_destroy(&a);
+            } else {
+                pthread_mutexattr_t a;
+                pthread_mutexattr_init(&a);
+                pthread_mutexattr_settype(&a, PTHREAD_MUTEX_NORMAL);
+                pthread_mutex_init(v, &a);
+                pthread_mutexattr_destroy(&a);
+            }
+            __atomic_store_n(p, v, __ATOMIC_RELEASE);
+        }
+    }
+    pthread_mutex_unlock(&g_slot_lock);
+    return v;
+}
+
+#define MUTEX(l) ((pthread_mutex_t *)slot(&(l)->p, sizeof(pthread_mutex_t), 0))
+#define COND(c) ((pthread_cond_t *)slot(&(c)->p, sizeof(pthread_cond_t), 1))
+
+void InitializeSRWLock(PSRWLOCK l) { (void)MUTEX(l); }
+void AcquireSRWLockExclusive(PSRWLOCK l) { pthread_mutex_lock(MUTEX(l)); }
+void ReleaseSRWLockExclusive(PSRWLOCK l) { pthread_mutex_unlock((pthread_mutex_t *)l->p); }
+void AcquireSRWLockShared(PSRWLOCK l) { pthread_mutex_lock(MUTEX(l)); }
+void ReleaseSRWLockShared(PSRWLOCK l) { pthread_mutex_unlock((pthread_mutex_t *)l->p); }
+BOOL TryAcquireSRWLockExclusive(PSRWLOCK l) { return pthread_mutex_trylock(MUTEX(l)) == 0; }
+BOOL TryAcquireSRWLockShared(PSRWLOCK l) { return TryAcquireSRWLockExclusive(l); }
+
+void InitializeConditionVariable(PCONDITION_VARIABLE c) { (void)COND(c); }
+BOOL SleepConditionVariableSRW(PCONDITION_VARIABLE c, PSRWLOCK l, DWORD ms, ULONG flags) {
+    (void)flags;
+    pthread_cond_t *cp = COND(c);
+    pthread_mutex_t *mp = MUTEX(l);
+    if (ms == INFINITE) return pthread_cond_wait(cp, mp) == 0;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    ts.tv_sec += ms / 1000;
+    ts.tv_nsec += (long)(ms % 1000) * 1000000L;
+    if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+    return pthread_cond_timedwait(cp, mp, &ts) == 0;
+}
+void WakeConditionVariable(PCONDITION_VARIABLE c) { pthread_cond_signal(COND(c)); }
+void WakeAllConditionVariable(PCONDITION_VARIABLE c) { pthread_cond_broadcast(COND(c)); }
+
+void InitializeCriticalSection(LPCRITICAL_SECTION c) { (void)MUTEX(c); }
+void EnterCriticalSection(LPCRITICAL_SECTION c) { pthread_mutex_lock(MUTEX(c)); }
+void LeaveCriticalSection(LPCRITICAL_SECTION c) { pthread_mutex_unlock((pthread_mutex_t *)c->p); }
+BOOL TryEnterCriticalSection(LPCRITICAL_SECTION c) { return pthread_mutex_trylock(MUTEX(c)) == 0; }
+void DeleteCriticalSection(LPCRITICAL_SECTION c) { (void)c; }
+
+// ---- interlocked
+
+LONG InterlockedIncrement(LONG volatile *p) { return __atomic_add_fetch(p, 1, __ATOMIC_SEQ_CST); }
+LONG InterlockedDecrement(LONG volatile *p) { return __atomic_sub_fetch(p, 1, __ATOMIC_SEQ_CST); }
+LONG InterlockedExchange(LONG volatile *p, LONG v) { return __atomic_exchange_n(p, v, __ATOMIC_SEQ_CST); }
+LONG InterlockedCompareExchange(LONG volatile *p, LONG v, LONG cmp) {
+    __atomic_compare_exchange_n(p, &cmp, v, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return cmp;
+}
+LONG InterlockedAdd(LONG volatile *p, LONG v) { return __atomic_add_fetch(p, v, __ATOMIC_SEQ_CST); }
+LONGLONG InterlockedIncrement64(LONGLONG volatile *p) { return __atomic_add_fetch(p, 1, __ATOMIC_SEQ_CST); }
+LONGLONG InterlockedDecrement64(LONGLONG volatile *p) { return __atomic_sub_fetch(p, 1, __ATOMIC_SEQ_CST); }
+LONGLONG InterlockedExchange64(LONGLONG volatile *p, LONGLONG v) { return __atomic_exchange_n(p, v, __ATOMIC_SEQ_CST); }
+LONGLONG InterlockedCompareExchange64(LONGLONG volatile *p, LONGLONG v, LONGLONG cmp) {
+    __atomic_compare_exchange_n(p, &cmp, v, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return cmp;
+}
+LONGLONG InterlockedAdd64(LONGLONG volatile *p, LONGLONG v) { return __atomic_add_fetch(p, v, __ATOMIC_SEQ_CST); }
+void *InterlockedExchangePointer(void *volatile *p, void *v) { return __atomic_exchange_n(p, v, __ATOMIC_SEQ_CST); }
+void *InterlockedCompareExchangePointer(void *volatile *p, void *v, void *cmp) {
+    __atomic_compare_exchange_n(p, &cmp, v, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return cmp;
+}
+
+// ---- thread handles, including suspension and context transfer
+
+enum { K_THREAD = 0x54485244, K_FILE = 0x46494c45, K_FIND = 0x464e4421, K_TIMER = 0x54494d52, K_SNAP = 0x534e4150,
+       K_PROCESS = 0x50524f43 };
+
+typedef struct ThreadHandle {
+    int kind;
+    pthread_t thread;
+    pid_t tid;
+    int used;
+    int detached;
+    int suspended;          // 0 = not parked, 1 = parked and published, 2 = released
+    CONTEXT ctx;
+    int ctx_valid;
+    int ctx_modified;
+    int exit_code;
+} ThreadHandle;
+
+#define MAX_THREAD_HANDLES 512
+static ThreadHandle *g_handles[MAX_THREAD_HANDLES];
+static pthread_mutex_t g_handle_lock = PTHREAD_MUTEX_INITIALIZER;
+static __thread ThreadHandle *tls_handle;
+
+// SI_USER-style machinery for suspend/context
+static void suspend_handler(int sig, siginfo_t *si, void *uc_) {
+    (void)sig;
+    (void)si;
+    ucontext_t *uc = uc_;
+    ThreadHandle *h = tls_handle;
+    if (!h) return;
+    greg_t *g = uc->uc_mcontext.gregs;
+    h->ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+    h->ctx.Rax = (DWORD64)g[REG_RAX];
+    h->ctx.Rcx = (DWORD64)g[REG_RCX];
+    h->ctx.Rdx = (DWORD64)g[REG_RDX];
+    h->ctx.Rbx = (DWORD64)g[REG_RBX];
+    h->ctx.Rsp = (DWORD64)g[REG_RSP];
+    h->ctx.Rbp = (DWORD64)g[REG_RBP];
+    h->ctx.Rsi = (DWORD64)g[REG_RSI];
+    h->ctx.Rdi = (DWORD64)g[REG_RDI];
+    h->ctx.R8 = (DWORD64)g[REG_R8];
+    h->ctx.R9 = (DWORD64)g[REG_R9];
+    h->ctx.R10 = (DWORD64)g[REG_R10];
+    h->ctx.R11 = (DWORD64)g[REG_R11];
+    h->ctx.R12 = (DWORD64)g[REG_R12];
+    h->ctx.R13 = (DWORD64)g[REG_R13];
+    h->ctx.R14 = (DWORD64)g[REG_R14];
+    h->ctx.R15 = (DWORD64)g[REG_R15];
+    h->ctx.Rip = (DWORD64)g[REG_RIP];
+    h->ctx.EFlags = (DWORD)g[REG_EFL];
+    h->ctx_valid = 1;
+    h->ctx_modified = 0;
+    __atomic_store_n(&h->suspended, 1, __ATOMIC_RELEASE);
+    while (__atomic_load_n(&h->suspended, __ATOMIC_ACQUIRE) == 1) syscall(SYS_sched_yield);
+    if (h->ctx_modified) {
+        g[REG_RAX] = (greg_t)h->ctx.Rax;
+        g[REG_RCX] = (greg_t)h->ctx.Rcx;
+        g[REG_RDX] = (greg_t)h->ctx.Rdx;
+        g[REG_RBX] = (greg_t)h->ctx.Rbx;
+        g[REG_RSP] = (greg_t)h->ctx.Rsp;
+        g[REG_RBP] = (greg_t)h->ctx.Rbp;
+        g[REG_RSI] = (greg_t)h->ctx.Rsi;
+        g[REG_RDI] = (greg_t)h->ctx.Rdi;
+        g[REG_R8] = (greg_t)h->ctx.R8;
+        g[REG_R9] = (greg_t)h->ctx.R9;
+        g[REG_R10] = (greg_t)h->ctx.R10;
+        g[REG_R11] = (greg_t)h->ctx.R11;
+        g[REG_R12] = (greg_t)h->ctx.R12;
+        g[REG_R13] = (greg_t)h->ctx.R13;
+        g[REG_R14] = (greg_t)h->ctx.R14;
+        g[REG_R15] = (greg_t)h->ctx.R15;
+        g[REG_RIP] = (greg_t)h->ctx.Rip;
+        g[REG_EFL] = (greg_t)h->ctx.EFlags;
+    }
+    h->ctx_valid = 0;
+    __atomic_store_n(&h->suspended, 0, __ATOMIC_RELEASE);
+}
+
+static void install_suspend_handler(void) {
+    static int done;
+    if (done) return;
+    done = 1;
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = suspend_handler;
+    sa.sa_flags = SA_SIGINFO | SA_RESTART;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGUSR2, &sa, NULL);
+}
+
+typedef struct {
+    ThreadHandle *h;
+    PTHREAD_START_ROUTINE fn;
+    void *arg;
+} ThreadStart;
+
+static void *thread_body(void *p) {
+    ThreadStart *s = p;
+    tls_handle = s->h;
+    s->h->tid = (pid_t)syscall(SYS_gettid);
+    void *r = s->fn(s->arg);
+    s->h->exit_code = 0;
+    free(s);
+    return r;
+}
+
+static ThreadHandle *handle_for_tid(pid_t tid) {
+    ThreadHandle *found = NULL;
+    pthread_mutex_lock(&g_handle_lock);
+    for (int i = 0; i < MAX_THREAD_HANDLES; i++)
+        if (g_handles[i] && g_handles[i]->tid == tid && g_handles[i]->used) { found = g_handles[i]; break; }
+    pthread_mutex_unlock(&g_handle_lock);
+    return found;
+}
+
+HANDLE CreateThread(void *attr, SIZE_T stack, PTHREAD_START_ROUTINE fn, void *arg, DWORD flags, DWORD *id) {
+    (void)attr;
+    (void)flags;
+    install_suspend_handler();
+    ThreadHandle *h = calloc(1, sizeof *h);
+    ThreadStart *s = calloc(1, sizeof *s);
+    if (!h || !s) { free(h); free(s); SetLastError(ERROR_NOT_ENOUGH_MEMORY); return NULL; }
+    h->kind = K_THREAD;
+    h->used = 1;
+    s->h = h;
+    s->fn = fn;
+    s->arg = arg;
+    pthread_attr_t a;
+    pthread_attr_init(&a);
+    if (stack) pthread_attr_setstacksize(&a, stack);
+    int r = pthread_create(&h->thread, &a, thread_body, s);
+    pthread_attr_destroy(&a);
+    if (r) { free(h); free(s); SetLastError(ERROR_NOT_ENOUGH_MEMORY); return NULL; }
+    for (int i = 0; i < 100000 && !h->tid; i++) sched_yield();   // thread_body publishes it
+    pthread_mutex_lock(&g_handle_lock);
+    for (int i = 0; i < MAX_THREAD_HANDLES; i++)
+        if (!g_handles[i]) { g_handles[i] = h; break; }
+    pthread_mutex_unlock(&g_handle_lock);
+    if (id) *id = (DWORD)h->tid;
+    return h;
+}
+
+
+HANDLE GetCurrentThread(void) {
+    if (!tls_handle) {
+        ThreadHandle *h = calloc(1, sizeof *h);
+        h->kind = K_THREAD;
+        h->used = 1;
+        h->tid = (pid_t)syscall(SYS_gettid);
+        h->thread = pthread_self();
+        tls_handle = h;
+    }
+    return tls_handle;
+}
+
+DWORD GetCurrentThreadId(void) { return (DWORD)syscall(SYS_gettid); }
+DWORD GetCurrentProcessId(void) { return (DWORD)getpid(); }
+HANDLE GetCurrentProcess(void) { return (HANDLE)(intptr_t)-2; }
+
+DWORD SuspendThread(HANDLE h) {
+    ThreadHandle *t = h;
+    if (!t) { SetLastError(ERROR_INVALID_HANDLE); return (DWORD)-1; }
+    if (t == tls_handle) return 0;   // suspending ourselves is a no-op, as Windows documents it is a deadlock
+    __atomic_store_n(&t->suspended, 0, __ATOMIC_RELEASE);
+    t->ctx_valid = 0;
+    if (syscall(SYS_tgkill, getpid(), t->tid, SIGUSR2)) { SetLastError(ESRCH); return (DWORD)-1; }
+    for (int i = 0; i < 100000000 && __atomic_load_n(&t->suspended, __ATOMIC_ACQUIRE) == 0; i++) syscall(SYS_sched_yield);
+    if (__atomic_load_n(&t->suspended, __ATOMIC_ACQUIRE) != 1) { SetLastError(ERROR_TIMEOUT); return (DWORD)-1; }
+    return 1;
+}
+
+DWORD ResumeThread(HANDLE h) {
+    ThreadHandle *t = h;
+    if (!t) return (DWORD)-1;
+    int was = __atomic_load_n(&t->suspended, __ATOMIC_ACQUIRE);
+    __atomic_store_n(&t->suspended, 2, __ATOMIC_RELEASE);
+    return was == 1 ? 1 : 0;
+}
+
+BOOL GetThreadContext(HANDLE h, CONTEXT *ctx) {
+    ThreadHandle *t = h;
+    if (!t || !t->ctx_valid) return FALSE;
+    *ctx = t->ctx;
+    return TRUE;
+}
+
+BOOL SetThreadContext(HANDLE h, const CONTEXT *ctx) {
+    ThreadHandle *t = h;
+    if (!t || !t->ctx_valid) return FALSE;
+    t->ctx = *ctx;
+    t->ctx_modified = 1;
+    return TRUE;
+}
+
+HANDLE OpenThread(DWORD access, BOOL inherit, DWORD tid) {
+    (void)access;
+    (void)inherit;
+    ThreadHandle *h = handle_for_tid((pid_t)tid);
+    return h ? h : NULL;
+}
+
+BOOL SetThreadPriority(HANDLE h, int prio) {
+    (void)h;
+    (void)prio;   // the kernel models priorities itself; host priorities would only add noise
+    return TRUE;
+}
+int GetThreadPriority(HANDLE h) { (void)h; return THREAD_PRIORITY_NORMAL; }
+
+BOOL SetThreadAffinityMask(HANDLE h, DWORD_PTR mask) {
+    ThreadHandle *t = h;
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    for (int i = 0; i < 64; i++)
+        if (mask >> i & 1) CPU_SET(i, &set);
+    pthread_t th = t ? t->thread : pthread_self();
+    return pthread_setaffinity_np(th, sizeof set, &set) == 0;
+}
+
+void SwitchToThread(void) { sched_yield(); }
+DWORD GetActiveProcessorCount(WORD group) { (void)group; return (DWORD)sysconf(_SC_NPROCESSORS_ONLN); }
+
+BOOL SetThreadDescription(HANDLE h, const WCHAR *name) {
+    (void)h;
+    if (!name) return FALSE;
+    char buf[64];
+    size_t i = 0;
+    for (; name[i] && i < sizeof buf - 1; i++) buf[i] = (char)name[i];
+    buf[i] = 0;
+    pthread_setname_np(pthread_self(), buf);
+    return TRUE;
+}
+
+
+BOOL GetExitCodeThread(HANDLE h, DWORD *code) {
+    ThreadHandle *t = h;
+    if (!t || !code) return FALSE;
+    *code = (DWORD)t->exit_code;
+    return TRUE;
+}
+
+void GetSystemInfo(void *info) {
+    SYSTEM_INFO *si = info;
+    memset(si, 0, sizeof *si);
+    si->dwNumberOfProcessors = (DWORD)sysconf(_SC_NPROCESSORS_ONLN);
+    si->dwPageSize = (DWORD)sysconf(_SC_PAGESIZE);
+    si->dwAllocationGranularity = 65536;
+    si->wProcessorArchitecture = 9;   // PROCESSOR_ARCHITECTURE_AMD64
+}
+
+// ---- time
+
+static uint64_t mono_ns(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (uint64_t)t.tv_sec * 1000000000u + (uint64_t)t.tv_nsec;
+}
+
+void QueryPerformanceCounter(LARGE_INTEGER *t) { t->QuadPart = (LONGLONG)mono_ns(); }
+void QueryPerformanceFrequency(LARGE_INTEGER *f) { f->QuadPart = 1000000000ll; }
+DWORD GetTickCount(void) { return (DWORD)(mono_ns() / 1000000u); }
+ULONGLONG GetTickCount64(void) { return mono_ns() / 1000000u; }
+void timeBeginPeriod(UINT ms) { (void)ms; }
+void timeEndPeriod(UINT ms) { (void)ms; }
+
+void Sleep(DWORD ms) {
+    if (!ms) { sched_yield(); return; }
+    struct timespec ts = {ms / 1000, (long)(ms % 1000) * 1000000L};
+    while (nanosleep(&ts, &ts) == -1 && errno == EINTR) {
+    }
+}
+
+HANDLE CreateWaitableTimerExW(void *attr, const WCHAR *name, DWORD flags, DWORD access) {
+    (void)attr; (void)name; (void)flags; (void)access;
+    struct Timer { int kind; pthread_mutex_t m; pthread_cond_t c; uint64_t due; int armed; };
+    struct Timer *t = calloc(1, sizeof *t);
+    if (!t) return NULL;
+    t->kind = K_TIMER;
+    pthread_mutex_init(&t->m, NULL);
+    pthread_condattr_t a;
+    pthread_condattr_init(&a);
+    pthread_condattr_setclock(&a, CLOCK_MONOTONIC);
+    pthread_cond_init(&t->c, &a);
+    pthread_condattr_destroy(&a);
+    return t;
+}
+
+BOOL SetWaitableTimer(HANDLE h, const LARGE_INTEGER *due, LONG period, void *routine, void *arg, BOOL resume) {
+    (void)period; (void)routine; (void)arg; (void)resume;
+    struct Timer { int kind; pthread_mutex_t m; pthread_cond_t c; uint64_t due; int armed; };
+    struct Timer *t = h;
+    if (!t || t->kind != K_TIMER) return FALSE;
+    pthread_mutex_lock(&t->m);
+    t->due = mono_ns() + (uint64_t)(-due->QuadPart);
+    t->armed = 1;
+    pthread_cond_broadcast(&t->c);
+    pthread_mutex_unlock(&t->m);
+    return TRUE;
+}
+
+// ---- files
+
+typedef struct {
+    int kind;
+    int fd;
+} FileHandle;
+
+static int utf8_from_wide(const WCHAR *w, char *out, size_t cap) {
+    size_t o = 0;
+    for (; *w; w++) {
+        uint32_t c = (uint32_t)*w;
+        char buf[4];
+        int n;
+        if (c < 0x80) { buf[0] = (char)c; n = 1; }
+        else if (c < 0x800) { buf[0] = (char)(0xC0 | (c >> 6)); buf[1] = (char)(0x80 | (c & 0x3F)); n = 2; }
+        else if (c < 0x10000) {
+            buf[0] = (char)(0xE0 | (c >> 12)); buf[1] = (char)(0x80 | ((c >> 6) & 0x3F));
+            buf[2] = (char)(0x80 | (c & 0x3F)); n = 3;
+        } else {
+            buf[0] = (char)(0xF0 | (c >> 18)); buf[1] = (char)(0x80 | ((c >> 12) & 0x3F));
+            buf[2] = (char)(0x80 | ((c >> 6) & 0x3F)); buf[3] = (char)(0x80 | (c & 0x3F)); n = 4;
+        }
+        if (o + (size_t)n + 1 > cap) break;
+        memcpy(out + o, buf, (size_t)n);
+        o += (size_t)n;
+    }
+    out[o] = 0;
+    return (int)o;
+}
+
+static size_t wide_from_utf8(const char *s, WCHAR *out, size_t cap) {
+    size_t o = 0;
+    while (*s && o + 1 < cap) {
+        unsigned char c = (unsigned char)*s;
+        uint32_t cp;
+        int n;
+        if (c < 0x80) { cp = c; n = 1; }
+        else if ((c & 0xE0) == 0xC0) { cp = c & 0x1F; n = 2; }
+        else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; n = 3; }
+        else { cp = c & 0x07; n = 4; }
+        for (int i = 1; i < n && s[i]; i++) cp = (cp << 6) | ((unsigned char)s[i] & 0x3F);
+        s += n;
+        out[o++] = (WCHAR)cp;
+    }
+    if (cap) out[o] = 0;
+    return o;
+}
+
+static int open_flags(DWORD access, DWORD disposition) {
+    int f = 0;
+    if ((access & GENERIC_READ) && (access & GENERIC_WRITE)) f = O_RDWR;
+    else if (access & GENERIC_WRITE) f = O_WRONLY;
+    else f = O_RDONLY;
+    switch (disposition) {
+    case CREATE_ALWAYS: return f | O_CREAT | O_TRUNC;
+    case CREATE_NEW: return f | O_CREAT | O_EXCL;
+    case OPEN_ALWAYS: return f | O_CREAT;
+    case TRUNCATE_EXISTING: return f | O_TRUNC;
+    default: return f;
+    }
+}
+
+HANDLE CreateFileA(const char *path, DWORD access, DWORD share, void *sa, DWORD disposition, DWORD flags, HANDLE tmpl) {
+    (void)share; (void)sa; (void)flags; (void)tmpl;
+    int fd = open(path, open_flags(access, disposition) | O_CLOEXEC, 0644);
+    if (fd < 0) { SetLastError(errno == ENOENT ? ERROR_FILE_NOT_FOUND : errno); return INVALID_HANDLE_VALUE; }
+    FileHandle *h = calloc(1, sizeof *h);
+    if (!h) { close(fd); return INVALID_HANDLE_VALUE; }
+    h->kind = K_FILE;
+    h->fd = fd;
+    return h;
+}
+
+HANDLE CreateFileW(const WCHAR *path, DWORD access, DWORD share, void *sa, DWORD disposition, DWORD flags, HANDLE tmpl) {
+    char p[4096];
+    utf8_from_wide(path, p, sizeof p);
+    return CreateFileA(p, access, share, sa, disposition, flags, tmpl);
+}
+
+BOOL ReadFile(HANDLE h, void *buf, DWORD n, DWORD *got, void *ov) {
+    (void)ov;
+    FileHandle *f = h;
+    if (!f || f->kind != K_FILE) return FALSE;
+    ssize_t r = read(f->fd, buf, n);
+    if (r < 0) { SetLastError(errno); return FALSE; }
+    if (got) *got = (DWORD)r;
+    return TRUE;
+}
+
+BOOL WriteFile(HANDLE h, const void *buf, DWORD n, DWORD *written, void *ov) {
+    (void)ov;
+    FileHandle *f = h;
+    if (!f || f->kind != K_FILE) return FALSE;
+    const uint8_t *p = buf;
+    DWORD done = 0;
+    while (done < n) {
+        ssize_t w = write(f->fd, p + done, n - done);
+        if (w <= 0) { SetLastError(errno); return FALSE; }
+        done += (DWORD)w;
+    }
+    if (written) *written = done;
+    return TRUE;
+}
+
+BOOL GetFileSizeEx(HANDLE h, LARGE_INTEGER *size) {
+    FileHandle *f = h;
+    struct stat st;
+    if (!f || f->kind != K_FILE || fstat(f->fd, &st)) return FALSE;
+    size->QuadPart = st.st_size;
+    return TRUE;
+}
+
+BOOL SetFilePointerEx(HANDLE h, LARGE_INTEGER dist, LARGE_INTEGER *out, DWORD method) {
+    FileHandle *f = h;
+    if (!f || f->kind != K_FILE) return FALSE;
+    int w = method == FILE_BEGIN ? SEEK_SET : method == FILE_CURRENT ? SEEK_CUR : SEEK_END;
+    off_t o = lseek(f->fd, (off_t)dist.QuadPart, w);
+    if (o < 0) return FALSE;
+    if (out) out->QuadPart = o;
+    return TRUE;
+}
+
+BOOL FlushFileBuffers(HANDLE h) {
+    FileHandle *f = h;
+    return f && f->kind == K_FILE && fsync(f->fd) == 0;
+}
+
+static DWORD stat_attributes(const char *path) {
+    struct stat st;
+    if (stat(path, &st)) return 0xFFFFFFFFu;
+    DWORD a = S_ISDIR(st.st_mode) ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+    if (!(st.st_mode & S_IWUSR)) a |= FILE_ATTRIBUTE_READONLY;
+    return a;
+}
+
+DWORD GetFileAttributesA(const char *path) { return stat_attributes(path); }
+
+DWORD GetFileAttributesW(const WCHAR *path) {
+    char p[4096];
+    utf8_from_wide(path, p, sizeof p);
+    return stat_attributes(p);
+}
+
+BOOL SetFileAttributesW(const WCHAR *path, DWORD attr) {
+    char p[4096];
+    utf8_from_wide(path, p, sizeof p);
+    return chmod(p, (attr & FILE_ATTRIBUTE_READONLY) ? 0444 : 0644) == 0;
+}
+
+BOOL DeleteFileA(const char *path) { return unlink(path) == 0; }
+
+BOOL DeleteFileW(const WCHAR *path) {
+    char p[4096];
+    utf8_from_wide(path, p, sizeof p);
+    return DeleteFileA(p);
+}
+
+BOOL MoveFileExW(const WCHAR *from, const WCHAR *to, DWORD flags) {
+    (void)flags;
+    char a[4096], b[4096];
+    utf8_from_wide(from, a, sizeof a);
+    utf8_from_wide(to, b, sizeof b);
+    return rename(a, b) == 0;
+}
+
+BOOL CreateDirectoryW(const WCHAR *path, void *sa) {
+    (void)sa;
+    char p[4096];
+    utf8_from_wide(path, p, sizeof p);
+    return mkdir(p, 0755) == 0;
+}
+
+BOOL RemoveDirectoryW(const WCHAR *path) {
+    char p[4096];
+    utf8_from_wide(path, p, sizeof p);
+    return rmdir(p) == 0;
+}
+
+// FindFirstFileW/FindNextFileW: the runtime lists directories (romfs files, shader cache) by pattern "dir/*.ext".
+typedef struct {
+    int kind;
+    DIR *dir;
+    char pattern[512];
+} FindHandle;
+
+static int match_pattern(const char *name, const char *pat) {
+    // only the two forms the runtime uses: "*" and "*.<ext>"
+    if (!strcmp(pat, "*")) return 1;
+    if (pat[0] == '*' && pat[1] == '.') {
+        size_t n = strlen(name), e = strlen(pat + 1);
+        return n > e && !strcmp(name + n - e, pat + 1);
+    }
+    return !strcmp(name, pat);
+}
+
+HANDLE FindFirstFileW(const WCHAR *pattern, WIN32_FIND_DATAW *data) {
+    char p[4096];
+    utf8_from_wide(pattern, p, sizeof p);
+    char *slash = strrchr(p, '/');
+    char dir_path[4096];
+    const char *pat = p;
+    if (slash) {
+        size_t n = (size_t)(slash - p);
+        if (n >= sizeof dir_path) return INVALID_HANDLE_VALUE;
+        memcpy(dir_path, p, n);
+        dir_path[n] = 0;
+        pat = slash + 1;
+    } else {
+        snprintf(dir_path, sizeof dir_path, ".");
+    }
+    DIR *d = opendir(dir_path[0] ? dir_path : "/");
+    if (!d) { SetLastError(ERROR_PATH_NOT_FOUND); return INVALID_HANDLE_VALUE; }
+    FindHandle *h = calloc(1, sizeof *h);
+    if (!h) { closedir(d); return INVALID_HANDLE_VALUE; }
+    h->kind = K_FIND;
+    h->dir = d;
+    snprintf(h->pattern, sizeof h->pattern, "%s", pat);
+    if (!FindNextFileW(h, data)) { FindClose(h); SetLastError(ERROR_FILE_NOT_FOUND); return INVALID_HANDLE_VALUE; }
+    return h;
+}
+
+BOOL FindNextFileW(HANDLE h, WIN32_FIND_DATAW *data) {
+    FindHandle *f = h;
+    if (!f || f->kind != K_FIND) return FALSE;
+    struct dirent *e;
+    while ((e = readdir(f->dir))) {
+        if (!match_pattern(e->d_name, f->pattern)) continue;
+        memset(data, 0, sizeof *data);
+        wide_from_utf8(e->d_name, data->cFileName, MAX_PATH);
+        data->dwFileAttributes = e->d_type == DT_DIR ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+BOOL FindClose(HANDLE h) {
+    FindHandle *f = h;
+    if (!f || f->kind != K_FIND) return FALSE;
+    closedir(f->dir);
+    free(f);
+    return TRUE;
+}
+
+DWORD GetModuleFileNameA(HMODULE mod, char *out, DWORD cap) {
+    (void)mod;
+    ssize_t n = readlink("/proc/self/exe", out, cap - 1);
+    if (n <= 0) return 0;
+    out[n] = 0;
+    return (DWORD)n;
+}
+
+DWORD GetModuleFileNameW(HMODULE mod, WCHAR *out, DWORD cap) {
+    char p[4096];
+    DWORD n = GetModuleFileNameA(mod, p, sizeof p);
+    if (!n) return 0;
+    wide_from_utf8(p, out, cap);
+    return (DWORD)wcslen(out);
+}
+
+// ---- process memory
+
+static BOOL proc_mem(HANDLE proc, PROCESS_MEMORY_COUNTERS *pmc, DWORD cb) {
+    (void)proc;
+    (void)cb;
+    FILE *f = fopen("/proc/self/status", "r");
+    if (!f) return FALSE;
+    char buf[256];
+    unsigned long long rss = 0, hwm = 0;
+    while (fgets(buf, sizeof buf, f)) {
+        unsigned long long kb;
+        if (sscanf(buf, "VmRSS: %llu kB", &kb) == 1) rss = kb;
+        else if (sscanf(buf, "VmHWM: %llu kB", &kb) == 1) hwm = kb;
+    }
+    fclose(f);
+    pmc->PeakWorkingSetSize = (SIZE_T)hwm * 1024;
+    pmc->WorkingSetSize = (SIZE_T)rss * 1024;
+    return TRUE;
+}
+
+BOOL GetProcessMemoryInfo(HANDLE proc, PROCESS_MEMORY_COUNTERS *pmc, DWORD cb) { return proc_mem(proc, pmc, cb); }
+BOOL K32GetProcessMemoryInfo(HANDLE proc, PROCESS_MEMORY_COUNTERS *pmc, DWORD cb) { return proc_mem(proc, pmc, cb); }
+
+// ---- string helpers
+
+int _wcsicmp(const WCHAR *a, const WCHAR *b) {
+    for (;; a++, b++) {
+        WCHAR x = *a, y = *b;
+        if (x >= 'A' && x <= 'Z') x += 32;
+        if (y >= 'A' && y <= 'Z') y += 32;
+        if (x != y) return (int)x - (int)y;
+        if (!x) return 0;
+    }
+}
+int _stricmp(const char *a, const char *b) { return strcasecmp(a, b); }
+int _strnicmp(const char *a, const char *b, size_t n) { return strncasecmp(a, b, n); }
+
+// ---- memory: reservations, protection, and the write watch
+//
+// The watch is the mprotect trap flavour: watched pages are read-only, a write faults, the SIGSEGV handler records the
+// page, makes it writable and returns. GetWriteWatch(RESET) reports the recorded pages and protects them again. That is
+// the slow of the three implementations platform/linux.c is meant to offer (userfaultfd and soft-dirty come later);
+// it is correct, which is what the first bring-up needs.
+
+#define WATCH_MAX 64
+typedef struct {
+    uintptr_t base;
+    size_t size;
+    uint8_t *dirty;   // one byte per 4 KiB page
+} Watch;
+
+static Watch g_watch[WATCH_MAX];
+static pthread_mutex_t g_watch_lock = PTHREAD_MUTEX_INITIALIZER;
+static int g_watch_installed;
+
+static Watch *watch_for(uintptr_t addr) {
+    for (int i = 0; i < WATCH_MAX; i++)
+        if (g_watch[i].dirty && addr >= g_watch[i].base && addr < g_watch[i].base + g_watch[i].size) return &g_watch[i];
+    return NULL;
+}
+
+static void watch_fault(int sig, siginfo_t *si, void *uc) {
+    (void)sig;
+    (void)uc;
+    Watch *w = watch_for((uintptr_t)si->si_addr);
+    if (!w) {
+        // not ours: put the default action back and let the fault kill the process with its real address
+        signal(SIGSEGV, SIG_DFL);
+        return;
+    }
+    size_t page = ((uintptr_t)si->si_addr - w->base) / 4096;
+    if (page < w->size / 4096) __atomic_store_n(&w->dirty[page], 1, __ATOMIC_RELAXED);
+    mprotect((void *)(w->base + page * 4096), 4096, PROT_READ | PROT_WRITE);
+}
+
+static void watch_install(void) {
+    if (g_watch_installed) return;
+    g_watch_installed = 1;
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = watch_fault;
+    sa.sa_flags = SA_SIGINFO | SA_NODEFER | SA_RESTART;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGSEGV, &sa, NULL);
+}
+
+static int prot_of(DWORD p) {
+    switch (p & 0xff) {
+    case PAGE_NOACCESS: return PROT_NONE;
+    case PAGE_READONLY: return PROT_READ;
+    case PAGE_READWRITE: return PROT_READ | PROT_WRITE;
+    case PAGE_EXECUTE: return PROT_EXEC;
+    case PAGE_EXECUTE_READ: return PROT_EXEC | PROT_READ;
+    case PAGE_EXECUTE_READWRITE: return PROT_EXEC | PROT_READ | PROT_WRITE;
+    default: return PROT_READ | PROT_WRITE;
+    }
+}
+
+static size_t page_up(size_t n) {
+    size_t p = (size_t)sysconf(_SC_PAGESIZE);
+    return (n + p - 1) & ~(p - 1);
+}
+
+void *VirtualAlloc(void *addr, SIZE_T size, DWORD type, DWORD prot) {
+    size_t n = page_up(size ? size : 1);
+    int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+    int p = PROT_NONE;
+    if (type & MEM_COMMIT) p = prot_of(prot);
+    if (addr) flags |= MAP_FIXED_NOREPLACE;
+    void *m = mmap(addr, n, p, flags, -1, 0);
+    if (m == MAP_FAILED) { SetLastError(errno == EEXIST ? ERROR_ALREADY_EXISTS : errno); return NULL; }
+    if ((type & MEM_WRITE_WATCH) && (type & MEM_COMMIT)) {
+        watch_install();
+        pthread_mutex_lock(&g_watch_lock);
+        for (int i = 0; i < WATCH_MAX; i++) {
+            if (g_watch[i].dirty) continue;
+            g_watch[i].base = (uintptr_t)m;
+            g_watch[i].size = n;
+            g_watch[i].dirty = calloc(n / 4096 + 1, 1);
+            if (!g_watch[i].dirty) { g_watch[i].size = 0; break; }
+            mprotect(m, n, PROT_READ);
+            break;
+        }
+        pthread_mutex_unlock(&g_watch_lock);
+    }
+    return m;
+}
+
+BOOL VirtualFree(void *addr, SIZE_T size, DWORD type) {
+    if (type & MEM_RELEASE) {
+        pthread_mutex_lock(&g_watch_lock);
+        for (int i = 0; i < WATCH_MAX; i++) {
+            if (!g_watch[i].dirty || g_watch[i].base != (uintptr_t)addr) continue;
+            free(g_watch[i].dirty);
+            g_watch[i].dirty = NULL;
+            g_watch[i].size = 0;
+        }
+        pthread_mutex_unlock(&g_watch_lock);
+        return munmap(addr, page_up(size)) == 0;
+    }
+    if (type & MEM_DECOMMIT) return mprotect(addr, page_up(size), PROT_NONE) == 0;
+    return FALSE;
+}
+
+BOOL VirtualProtect(void *addr, SIZE_T size, DWORD prot, DWORD *old) {
+    if (old) *old = PAGE_READWRITE;
+    return mprotect(addr, page_up(size), prot_of(prot)) == 0;
+}
+
+BOOL VirtualLock(void *addr, SIZE_T size) { (void)addr; (void)size; return TRUE; }
+BOOL VirtualUnlock(void *addr, SIZE_T size) { (void)addr; (void)size; return TRUE; }
+
+SIZE_T VirtualQuery(const void *addr, MEMORY_BASIC_INFORMATION *mbi, SIZE_T len) {
+    (void)len;
+    FILE *f = fopen("/proc/self/maps", "r");
+    if (!f) return 0;
+    char buf[512];
+    uintptr_t want = (uintptr_t)addr;
+    SIZE_T got = 0;
+    while (fgets(buf, sizeof buf, f)) {
+        unsigned long long lo, hi;
+        char perms[8];
+        if (sscanf(buf, "%llx-%llx %7s", &lo, &hi, perms) != 3) continue;
+        if (want < lo || want >= hi) continue;
+        memset(mbi, 0, sizeof *mbi);
+        mbi->BaseAddress = (PVOID)(uintptr_t)lo;
+        mbi->AllocationBase = (PVOID)(uintptr_t)lo;
+        mbi->RegionSize = (SIZE_T)(hi - lo);
+        mbi->AllocationProtect = mbi->Protect = perms[1] == 'w' ? PAGE_READWRITE
+                                  : perms[0] == 'r' ? PAGE_READONLY
+                                  : PAGE_NOACCESS;
+        mbi->State = MEM_COMMIT;
+        mbi->Type = MEM_PRIVATE;
+        got = sizeof *mbi;
+        break;
+    }
+    fclose(f);
+    return got;
+}
+
+UINT GetWriteWatch(DWORD flags, void *base, SIZE_T size, void **pages, ULONG_PTR *count, DWORD *granularity) {
+    Watch *w = watch_for((uintptr_t)base);
+    if (!w || !count || !granularity || !pages) return 1;
+    size_t first = ((uintptr_t)base - w->base) / 4096;
+    size_t npages = size / 4096;
+    if (first + npages > w->size / 4096) npages = w->size / 4096 - first;
+    ULONG_PTR max = *count, n = 0;
+    for (size_t i = 0; i < npages && n < max; i++) {
+        if (!__atomic_load_n(&w->dirty[first + i], __ATOMIC_RELAXED)) continue;
+        pages[n++] = (void *)(w->base + (first + i) * 4096);
+        if (flags & WRITE_WATCH_FLAG_RESET) {
+            __atomic_store_n(&w->dirty[first + i], 0, __ATOMIC_RELAXED);
+            mprotect((void *)(w->base + (first + i) * 4096), 4096, PROT_READ);
+        }
+    }
+    *count = n;
+    *granularity = 4096;
+    return 0;
+}
+
+UINT ResetWriteWatch(void *base, SIZE_T size) {
+    Watch *w = watch_for((uintptr_t)base);
+    if (!w) return 1;
+    size_t first = ((uintptr_t)base - w->base) / 4096;
+    size_t npages = size / 4096;
+    for (size_t i = 0; i < npages && first + i < w->size / 4096; i++) {
+        __atomic_store_n(&w->dirty[first + i], 0, __ATOMIC_RELAXED);
+        mprotect((void *)(w->base + (first + i) * 4096), 4096, PROT_READ);
+    }
+    return 0;
+}
+
+BOOL FlushInstructionCache(HANDLE proc, const void *addr, SIZE_T size) {
+    (void)proc;
+    __builtin___clear_cache((char *)(uintptr_t)addr, (char *)(uintptr_t)addr + size);
+    return TRUE;
+}
+
+// ---- environment and code-page conversion
+
+BOOL SetEnvironmentVariableA(const char *name, const char *value) {
+    if (!value) { unsetenv(name); return TRUE; }
+    return setenv(name, value, 1) == 0;
+}
+
+DWORD GetEnvironmentVariableA(const char *name, char *out, DWORD cap) {
+    const char *v = getenv(name);
+    if (!v) return 0;
+    size_t n = strlen(v);
+    if (n >= cap) return (DWORD)n + 1;
+    memcpy(out, v, n + 1);
+    return (DWORD)n;
+}
+
+int MultiByteToWideChar(UINT cp, DWORD flags, const char *in, int in_len, WCHAR *out, int out_cap) {
+    (void)cp; (void)flags;
+    if (in_len < 0) in_len = (int)strlen(in) + 1;
+    if (!out) return in_len;
+    size_t n = wide_from_utf8(in, out, (size_t)out_cap);
+    return (int)n;
+}
+
+int WideCharToMultiByte(UINT cp, DWORD flags, const WCHAR *in, int in_len, char *out, int out_cap, const char *def,
+                        BOOL *used) {
+    (void)cp; (void)flags; (void)def;
+    if (used) *used = FALSE;
+    if (in_len < 0) in_len = (int)wcslen(in) + 1;
+    if (!out) return in_len * 4;
+    int n = utf8_from_wide(in, out, (size_t)out_cap);
+    return n;
+}
+
+// ---- modules and processes
+
+HMODULE GetModuleHandleW(const WCHAR *name) {
+    if (!name) return (HMODULE)(uintptr_t)0x400000;   // the guest modules are not mapped by the loader
+    return NULL;
+}
+
+HMODULE LoadLibraryW(const WCHAR *name) {
+    char p[4096];
+    utf8_from_wide(name, p, sizeof p);
+    return dlopen(p, RTLD_NOW | RTLD_LOCAL);
+}
+
+FARPROC GetProcAddress(HMODULE mod, const char *name) { return (FARPROC)dlsym(mod, name); }
+
+typedef struct {
+    int kind;
+    pid_t pid;
+    int status;
+} ProcessHandle;
+
+static int split_args(char *line, char **argv, int max) {
+    int n = 0;
+    char *p = line;
+    while (*p && n < max - 1) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        if (*p == '"') {
+            p++;
+            argv[n++] = p;
+            while (*p && *p != '"') p++;
+        } else {
+            argv[n++] = p;
+            while (*p && *p != ' ' && *p != '\t') p++;
+        }
+        if (*p) *p++ = 0;
+    }
+    argv[n] = NULL;
+    return n;
+}
+
+BOOL CreateProcessW(const WCHAR *app, WCHAR *cmd, void *pa, void *ta, BOOL inherit, DWORD flags, void *env,
+                    const WCHAR *dir, void *si, void *pi) {
+    (void)pa; (void)ta; (void)inherit; (void)flags; (void)env; (void)si;
+    char line[8192];
+    if (cmd) utf8_from_wide(cmd, line, sizeof line);
+    else if (app) { utf8_from_wide(app, line, sizeof line); }
+    else return FALSE;
+    char *argv[64];
+    if (!split_args(line, argv, 64) || !argv[0]) return FALSE;
+    pid_t pid = fork();
+    if (pid < 0) return FALSE;
+    if (pid == 0) {
+        if (dir) {
+            char d[4096];
+            utf8_from_wide(dir, d, sizeof d);
+            if (chdir(d)) _exit(127);
+        }
+        if (!inherit) {
+            int null = open("/dev/null", O_RDWR);
+            if (null >= 0) { dup2(null, 0); dup2(null, 1); dup2(null, 2); }
+        }
+        execv(argv[0], argv);
+        _exit(127);
+    }
+    ProcessHandle *h = calloc(1, sizeof *h);
+    if (!h) { kill(pid, SIGKILL); return FALSE; }
+    h->kind = K_PROCESS;
+    h->pid = pid;
+    PROCESS_INFORMATION *p = pi;
+    p->hProcess = (HANDLE)h;
+    p->hThread = NULL;
+    p->dwProcessId = (DWORD)pid;
+    p->dwThreadId = 0;
+    return TRUE;
+}
+
+BOOL GetExitCodeProcess(HANDLE h, DWORD *code) {
+    ProcessHandle *p = h;
+    if (!p || !code) return FALSE;
+    int st = 0;
+    pid_t r = waitpid(p->pid, &st, WNOHANG);
+    if (r == 0) { *code = STILL_ACTIVE; return TRUE; }
+    *code = WIFEXITED(st) ? (DWORD)WEXITSTATUS(st) : 1;
+    return TRUE;
+}
+
+void ExitProcess(UINT code) { exit((int)code); }
+
+// ---- toolhelp: the process's own threads
+
+typedef struct {
+    int kind;
+    DIR *dir;
+} SnapHandle;
+
+HANDLE CreateToolhelp32Snapshot(DWORD flags, DWORD pid) {
+    (void)flags;
+    (void)pid;
+    SnapHandle *s = calloc(1, sizeof *s);
+    if (!s) return INVALID_HANDLE_VALUE;
+    s->kind = K_SNAP;
+    s->dir = opendir("/proc/self/task");
+    if (!s->dir) { free(s); return INVALID_HANDLE_VALUE; }
+    return s;
+}
+
+BOOL Thread32First(HANDLE snap, THREADENTRY32 *te) {
+    SnapHandle *s = snap;
+    if (!s || s->kind != K_SNAP) return FALSE;
+    rewinddir(s->dir);
+    return Thread32Next(snap, te);
+}
+
+BOOL Thread32Next(HANDLE snap, THREADENTRY32 *te) {
+    SnapHandle *s = snap;
+    struct dirent *e;
+    if (!s || s->kind != K_SNAP) return FALSE;
+    while ((e = readdir(s->dir))) {
+        if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+        memset(te, 0, sizeof *te);
+        te->dwSize = sizeof *te;
+        te->th32ThreadID = (DWORD)strtoul(e->d_name, NULL, 10);
+        te->th32OwnerProcessID = (DWORD)getpid();
+        return TRUE;
+    }
+    return FALSE;
+}
+
+// ---- handles
+
+BOOL CloseHandle(HANDLE h) {
+    if (!h) return FALSE;
+    int kind = *(int *)h;
+    switch (kind) {
+    case K_FILE: {
+        FileHandle *f = h;
+        close(f->fd);
+        free(f);
+        return TRUE;
+    }
+    case K_FIND: return FindClose(h);
+    case K_SNAP: {
+        SnapHandle *s = h;
+        if (s->dir) closedir(s->dir);
+        free(s);
+        return TRUE;
+    }
+    case K_TIMER: {
+        struct Timer { int kind; pthread_mutex_t m; pthread_cond_t c; uint64_t due; int armed; };
+        struct Timer *t = h;
+        pthread_mutex_destroy(&t->m);
+        pthread_cond_destroy(&t->c);
+        free(t);
+        return TRUE;
+    }
+    case K_THREAD: return TRUE;   // see the note above CreateThread
+    default: return FALSE;
+    }
+}
+
+DWORD WaitForSingleObject(HANDLE h, DWORD ms) {
+    if (!h) return WAIT_FAILED;
+    int kind = *(int *)h;
+    if (kind == K_THREAD) {
+        ThreadHandle *t = h;
+        if (ms == INFINITE) { pthread_join(t->thread, NULL); return WAIT_OBJECT_0; }
+        for (DWORD waited = 0; waited < ms; waited += 2) {
+            if (syscall(SYS_tgkill, getpid(), t->tid, 0) != 0) return WAIT_OBJECT_0;
+            Sleep(2);
+        }
+        return WAIT_TIMEOUT;
+    }
+    if (kind == K_PROCESS) {
+        ProcessHandle *p = h;
+        if (ms == INFINITE) { waitpid(p->pid, NULL, 0); return WAIT_OBJECT_0; }
+        for (DWORD waited = 0; waited < ms; waited += 2) {
+            int st;
+            if (waitpid(p->pid, &st, WNOHANG) == p->pid) return WAIT_OBJECT_0;
+            Sleep(2);
+        }
+        return WAIT_TIMEOUT;
+    }
+    if (kind == K_TIMER) {
+        struct Timer { int kind; pthread_mutex_t m; pthread_cond_t c; uint64_t due; int armed; };
+        struct Timer *t = h;
+        pthread_mutex_lock(&t->m);
+        while (t->armed) {
+            uint64_t now = mono_ns();
+            if (now >= t->due) { t->armed = 0; break; }
+            struct timespec ts = {(time_t)((t->due - now) / 1000000000u), (long)((t->due - now) % 1000000000u)};
+            pthread_cond_timedwait(&t->c, &t->m, &ts);
+        }
+        pthread_mutex_unlock(&t->m);
+        return WAIT_OBJECT_0;
+    }
+    return WAIT_FAILED;
+}
+
+// ---- printf-like wide formatting (the runtime's menu and log helpers)
+
+int _vsnwprintf(WCHAR *out, size_t cap, const WCHAR *fmt, va_list ap) {
+    char f[512], buf[4096];
+    size_t i = 0;
+    for (; fmt[i] && i < sizeof f - 1; i++) f[i] = (char)fmt[i];
+    f[i] = 0;
+    int n = vsnprintf(buf, sizeof buf, f, ap);
+    wide_from_utf8(buf, out, cap);
+    return n;
+}
+
+int _snwprintf(WCHAR *out, size_t cap, const WCHAR *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int n = _vsnwprintf(out, cap, fmt, ap);
+    va_end(ap);
+    return n;
+}
+
+int swprintf_s(WCHAR *out, size_t cap, const WCHAR *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int n = _vsnwprintf(out, cap, fmt, ap);
+    va_end(ap);
+    return n;
+}
+
+void *GlobalAlloc(UINT flags, SIZE_T bytes) { (void)flags; return malloc(bytes); }
+void *GlobalFree(void *ptr) { free(ptr); return NULL; }
+BOOL Beep(DWORD freq, DWORD ms) { (void)freq; (void)ms; return FALSE; }
+
+DWORD GetFullPathNameW(const WCHAR *name, DWORD cap, WCHAR *out, WCHAR **file) {
+    char in[4096], abs[4096];
+    utf8_from_wide(name, in, sizeof in);
+    if (in[0] == '/') snprintf(abs, sizeof abs, "%s", in);
+    else {
+        char cwd[2048];
+        if (!getcwd(cwd, sizeof cwd)) return 0;
+        snprintf(abs, sizeof abs, "%s/%s", cwd, in);
+    }
+    wide_from_utf8(abs, out, cap);
+    if (file) *file = wcsrchr(out, '/');
+    return (DWORD)wcslen(out);
+}
+
+// ---- SHA-256 (bcrypt.h). The runtime hashes the RomFS index at start; the RomFS checks are otherwise independent.
+
+typedef struct {
+    DWORD state[8];
+    uint64_t bytes;
+    BYTE block[64];
+    size_t used;
+} Sha256;
+
+static const DWORD sha_k[64] = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
+
+#define ROR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
+
+static void sha_block(Sha256 *s, const BYTE *p) {
+    DWORD w[64];
+    for (int i = 0; i < 16; i++) w[i] = (DWORD)p[i * 4] << 24 | (DWORD)p[i * 4 + 1] << 16 | (DWORD)p[i * 4 + 2] << 8 | p[i * 4 + 3];
+    for (int i = 16; i < 64; i++) {
+        DWORD a = w[i - 15], b = w[i - 2];
+        w[i] = w[i - 16] + w[i - 7] + (ROR(a, 7) ^ ROR(a, 18) ^ (a >> 3)) + (ROR(b, 17) ^ ROR(b, 19) ^ (b >> 10));
+    }
+    DWORD a = s->state[0], b = s->state[1], c = s->state[2], d = s->state[3];
+    DWORD e = s->state[4], f = s->state[5], g = s->state[6], h = s->state[7];
+    for (int i = 0; i < 64; i++) {
+        DWORD t1 = h + (ROR(e, 6) ^ ROR(e, 11) ^ ROR(e, 25)) + ((e & f) ^ (~e & g)) + sha_k[i] + w[i];
+        DWORD t2 = (ROR(a, 2) ^ ROR(a, 13) ^ ROR(a, 22)) + ((a & b) ^ (a & c) ^ (b & c));
+        h = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2;
+    }
+    s->state[0] += a; s->state[1] += b; s->state[2] += c; s->state[3] += d;
+    s->state[4] += e; s->state[5] += f; s->state[6] += g; s->state[7] += h;
+}
+
+static void sha_init(Sha256 *s) {
+    static const DWORD iv[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+                                0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+    memcpy(s->state, iv, sizeof iv);
+    s->bytes = 0;
+    s->used = 0;
+}
+
+static void sha_update(Sha256 *s, const BYTE *p, size_t n) {
+    s->bytes += n;
+    while (n) {
+        size_t take = 64 - s->used;
+        if (take > n) take = n;
+        memcpy(s->block + s->used, p, take);
+        s->used += take;
+        p += take;
+        n -= take;
+        if (s->used == 64) { sha_block(s, s->block); s->used = 0; }
+    }
+}
+
+static void sha_final(Sha256 *s, BYTE out[32]) {
+    uint64_t bits = s->bytes * 8;
+    BYTE pad = 0x80;
+    sha_update(s, &pad, 1);
+    BYTE zero = 0;
+    while (s->used != 56) sha_update(s, &zero, 1);
+    BYTE len[8];
+    for (int i = 0; i < 8; i++) len[i] = (BYTE)(bits >> (56 - i * 8));
+    sha_update(s, len, 8);
+    for (int i = 0; i < 8; i++) {
+        out[i * 4] = (BYTE)(s->state[i] >> 24);
+        out[i * 4 + 1] = (BYTE)(s->state[i] >> 16);
+        out[i * 4 + 2] = (BYTE)(s->state[i] >> 8);
+        out[i * 4 + 3] = (BYTE)s->state[i];
+    }
+}
+
+NTSTATUS BCryptOpenAlgorithmProvider(BCRYPT_ALG_HANDLE *alg, const char *id, const char *impl, DWORD flags) {
+    (void)id; (void)impl; (void)flags;
+    if (alg) *alg = calloc(1, 1);
+    return alg && *alg ? 0 : (NTSTATUS)0xC0000017;
+}
+NTSTATUS BCryptCloseAlgorithmProvider(BCRYPT_ALG_HANDLE alg, DWORD flags) { (void)flags; free(alg); return 0; }
+NTSTATUS BCryptCreateHash(BCRYPT_ALG_HANDLE alg, BCRYPT_HASH_HANDLE *hash, PBYTE obj, DWORD obj_len, PBYTE secret,
+                          DWORD secret_len, DWORD flags) {
+    (void)alg; (void)obj; (void)obj_len; (void)secret; (void)secret_len; (void)flags;
+    Sha256 *s = calloc(1, sizeof *s);
+    if (!s) return (NTSTATUS)0xC0000017;
+    sha_init(s);
+    *hash = s;
+    return 0;
+}
+NTSTATUS BCryptHashData(BCRYPT_HASH_HANDLE hash, PBYTE data, DWORD n, DWORD flags) {
+    (void)flags;
+    sha_update(hash, data, n);
+    return 0;
+}
+NTSTATUS BCryptFinishHash(BCRYPT_HASH_HANDLE hash, PBYTE out, DWORD n, DWORD flags) {
+    (void)flags;
+    BYTE digest[32];
+    sha_final(hash, digest);
+    memcpy(out, digest, n < 32 ? n : 32);
+    return 0;
+}
+NTSTATUS BCryptDestroyHash(BCRYPT_HASH_HANDLE hash) { free(hash); return 0; }
+
+// ---- one-time initialisation, pipes, environment
+
+BOOL InitOnceExecuteOnce(PINIT_ONCE once, BOOL (*fn)(PINIT_ONCE, void *, void **), void *param, void **ctx) {
+    pthread_mutex_lock(&once->m);
+    if (!once->done) {
+        once->done = fn(once, param, ctx) ? 1 : 2;
+    }
+    int ok = once->done == 1;
+    pthread_mutex_unlock(&once->m);
+    return ok;
+}
+
+BOOL CreatePipe(HANDLE *read_end, HANDLE *write_end, void *sa, DWORD size) {
+    (void)sa;
+    (void)size;
+    struct Pipe { int kind; int fd; };
+    int fds[2];
+    if (pipe(fds)) return FALSE;
+    struct Pipe *r = calloc(1, sizeof *r), *w = calloc(1, sizeof *w);
+    if (!r || !w) { close(fds[0]); close(fds[1]); free(r); free(w); return FALSE; }
+    r->kind = K_FILE;
+    r->fd = fds[0];
+    w->kind = K_FILE;
+    w->fd = fds[1];
+    *read_end = r;
+    *write_end = w;
+    return TRUE;
+}
+
+int _putenv_s(const char *name, const char *value) { return setenv(name, value, 1); }
+
+// ---- MSVC CRT helpers
+
+char *_strdup(const char *s) { return strdup(s); }
+void *_aligned_malloc(size_t size, size_t align) {
+    void *p = NULL;
+    if (posix_memalign(&p, align < sizeof(void *) ? sizeof(void *) : align, size)) return NULL;
+    return p;
+}
+void *_aligned_realloc(void *p, size_t size, size_t align) { (void)align; return realloc(p, size); }
+void _aligned_free(void *p) { free(p); }
+BOOL SetHandleInformation(HANDLE h, DWORD mask, DWORD flags) { (void)h; (void)mask; (void)flags; return TRUE; }
+BOOL GetHandleInformation(HANDLE h, DWORD *flags) { (void)h; if (flags) *flags = 0; return TRUE; }
+
+BOOL InitOnceBeginInitialize(PINIT_ONCE once, DWORD flags, BOOL *pending, void **ctx) {
+    (void)flags;
+    pthread_mutex_lock(&once->m);
+    if (once->done) {
+        if (pending) *pending = FALSE;
+        if (ctx) *ctx = NULL;
+    } else if (pending) {
+        *pending = TRUE;
+    }
+    pthread_mutex_unlock(&once->m);
+    return TRUE;
+}
+
+BOOL InitOnceComplete(PINIT_ONCE once, DWORD flags, void *ctx) {
+    (void)flags;
+    (void)ctx;
+    pthread_mutex_lock(&once->m);
+    once->done = 1;
+    pthread_mutex_unlock(&once->m);
+    return TRUE;
+}
+
+int GetUserDefaultLocaleName(WCHAR *out, int cap) {
+    const char *lang = getenv("LC_ALL");
+    if (!lang || !*lang) lang = getenv("LANG");
+    if (!lang || !*lang) lang = "en_US";
+    return (int)wide_from_utf8(lang, out, (size_t)cap);
+}
+
+NTSTATUS BCryptGenRandom(BCRYPT_ALG_HANDLE alg, PBYTE buf, DWORD n, DWORD flags) {
+    (void)alg;
+    (void)flags;
+    static int fd = -1;
+    if (fd < 0) fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return (NTSTATUS)0xC00000BB;
+    size_t done = 0;
+    while (done < n) {
+        ssize_t r = read(fd, buf + done, n - done);
+        if (r <= 0) return (NTSTATUS)0xC00000BB;
+        done += (size_t)r;
+    }
+    return 0;
+}

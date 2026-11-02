@@ -162,7 +162,7 @@ static void wait_add(WaitRec *w, int st, uint64_t obj, uint32_t waker, uint64_t 
 }
 
 // Close the current state's interval and enter st.
-static void acct(RtThread *t, int st) {
+static void acct_state(RtThread *t, int st) {
     if (!(rt_trace & RT_TRACE_SCHED)) return;
     uint64_t now = kern_now_ns();
     if (t->st_since) {
@@ -868,7 +868,7 @@ static void core_kick(void) {
 static void core_take(RtThread *t) {
     if (t->cur_core >= 0) return;
     if (!cores_enabled()) {
-        acct(t, S_RUN);
+        acct_state(t, S_RUN);
         return;
     }
     if (!(t->mask & ((1u << NCORE) - 1)))
@@ -880,10 +880,10 @@ static void core_take(RtThread *t) {
         t->cur_core = c;
         g_core_owner[c] = t;
         core_count();
-        acct(t, S_RUN);
+        acct_state(t, S_RUN);
         return;
     }
-    acct(t, S_CORE);
+    acct_state(t, S_CORE);
     t->cseq = ++g_wseq;
     t->cnext = g_core_wait;
     g_core_wait = t;
@@ -922,14 +922,14 @@ static void core_take(RtThread *t) {
         t->grant_at = 0;
     }
     t->target = NULL;
-    acct(t, S_RUN);
+    acct_state(t, S_RUN);
 }
 
 static uint32_t block(RtThread *t, int kind, int64_t ns) {
     t->waker = 0;
     if (ns == 0) return block_inner(t, kind, ns);
     core_put(t);
-    acct(t, st_of(kind));
+    acct_state(t, st_of(kind));
     t->nblk++;
     uint32_t r = block_inner(t, kind, ns);
     core_take(t);
@@ -941,7 +941,7 @@ int kern_core_away(void) {
     if (!t || t->cur_core < 0) return 0;
     lock();
     core_put(t);
-    acct(t, S_HOST);
+    acct_state(t, S_HOST);
     if (rt_trace & RT_TRACE_SCHED)   // the caller as an exe RVA (totk.map)
         t->wobj = (uintptr_t)__builtin_return_address(0) - (uintptr_t)GetModuleHandleW(NULL);
     unlock();
@@ -1160,7 +1160,7 @@ void kern_sched_report(uint64_t frame) {
     RtThread *top[REP_N + 1] = {0};
     uint64_t busy[REP_N + 1] = {0}, all_run = 0, all_core = 0;
     for (RtThread *t = g_all; t; t = t->all) {
-        acct(t, t->st);   // close the open interval
+        acct_state(t, t->st);   // close the open interval
         uint64_t b = t->st_ns[S_RUN] + t->st_ns[S_CORE] + t->st_ns[S_HOST];
         all_run += t->st_ns[S_RUN];
         all_core += t->st_ns[S_CORE];
@@ -1300,7 +1300,7 @@ static void lock_acquire_for(RtThread *t, uint64_t addr, uint32_t tag) {
         }
         if (cas32(addr, &v, v | WAITERS_BIT)) break;
     }
-    acct(t, S_LOCK);
+    acct_state(t, S_LOCK);
     t->wobj = v & ~WAITERS_BIT;
     t->wkind = W_LOCK;
     t->waddr = addr;
@@ -1361,7 +1361,7 @@ static void thread_finish(RtThread *t) {
     tcur = NULL;
     lock();
     core_put(t);
-    acct(t, S_OFF);
+    acct_state(t, S_OFF);
     if (t->hthr) CloseHandle(t->hthr);   // no waiter interrupts a thread without a core
     t->hthr = NULL;
     t->exited = 1;
@@ -1620,7 +1620,7 @@ int kern_svc(Cpu *c, uint32_t imm) {
         if (ns > 0) {
             lock();
             core_put(t);
-            acct(t, S_SLEEP);
+            acct_state(t, S_SLEEP);
             t->wobj = (uint64_t)ns;
             t->nblk++;
             unlock();
