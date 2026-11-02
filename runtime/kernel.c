@@ -348,11 +348,7 @@ static void ap_init(void) {
     if (g_ap >= 0) return;
     const char *e = cfg_value("TOTK_ASYNC_PREEMPT");
 #ifndef _WIN32
-    // The interruption half is not safe on the Linux port yet: hijacking a thread's rip needs the red zone and the
-    // signal frame out of the way, both fixed, but a guest still corrupts after a redirect. Inheritance and the
-    // preemption disable are the parts that matter for forward progress, so they stay on by default and interruptions
-    // need TOTK_ASYNC_PREEMPT=1 (docs/linux.md, "async preemption").
-    if (!e || !*e) e = "2";
+    if (!e || !*e) e = "2";   // the port's default, see cfg.c
 #endif
     g_ap = strcmp(e, "0") != 0;
     g_ap_int = g_ap && strcmp(e, "2") != 0;

@@ -106,7 +106,14 @@ static const CfgMeta metas[] = {
     {"MOUSE_SENS", "1", "0..10", LIVE},
     {"MENU_LANG", "", "en|ru", LIVE},
     // Advanced: scheduling
-    {"ASYNC_PREEMPT", "1", "0|1|2", RESTART}, {"REPLAY_ASYNC", "0", "0|1", RESTART},
+#ifdef _WIN32
+    {"ASYNC_PREEMPT", "1", "0|1|2", RESTART},
+#else
+    // The redirect half still corrupts guest state on the port (docs/linux.md); inheritance and the preemption
+    // disable are the parts that keep the game moving.
+    {"ASYNC_PREEMPT", "2", "0|1|2", RESTART},
+#endif
+    {"REPLAY_ASYNC", "0", "0|1", RESTART},
     {"FREE_CORES", "0", "0|1", RESTART}, {"TIMER_1MS", "1", "0|1", RESTART},
     // shaders and pipelines
     {"PIPE_WAIT", "default", "default|draw", RESTART}, {"PIPE_SKIP", "fullscreen", "strict|any|fullscreen", RESTART},

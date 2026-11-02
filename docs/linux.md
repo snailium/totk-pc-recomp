@@ -159,8 +159,12 @@ Acceptance for each item is a command that fails before and passes after.
       dies soon after `hid: controllers initialized`. Two hazards are fixed (a signal frame written below the suspended
       thread's stack pointer destroyed its red zone — handlers now run on an alternate stack, and the stub reserves the
       red zone): the remaining one is in the redirect itself and needs the redirect log (`g_ap_log`) plus a reproduce.
-      Until then the port defaults to `=2`; `=1` turns the redirects on
-- [ ] title screen on `.101` and on BC-250 Bazzite — the boot now loads content (`/RSDB/*.rstbl.byml.zs`,
+      Until then the port defaults to `=2` (the default lives in `cfg.c`, so `totk.ini` and the environment still
+      override it); `=1` turns the redirects on
+- [x] the guest issues draw commands: after the vibration init the port runs the renderer (`nvnCommandBufferSetViewport`,
+      `BindBlendState`, `nvnQueueFenceSync`, ... thousands of calls), so the boot reaches the drawing stage
+- [ ] confirm that frames reach the compositor (the run produces no present log and no screenshot yet) and then the
+      title screen, on `.101` and on BC-250 Bazzite — the boot now loads content (`/RSDB/*.rstbl.byml.zs`,
       `/Pack/*.pack.zs`) and stops in the SDK's own `memcpy` (`f_70007bfa6c`/`f_70007bfa94`, deterministic, from
       `f_70007bd0b0`). The copy overruns its source: `si_addr` is `0x737265cc`, inside the heap but past the source
       object, so the length or the end pointer the caller passes is wrong. Next: read the argument setup in
