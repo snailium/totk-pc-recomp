@@ -189,7 +189,24 @@ static void image_barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, V
     vkCmdPipelineBarrier2(cb, &dep);
 }
 
+static unsigned long long n_blit_ok, n_blit_ood, n_blit_fail, n_flip_ok, n_flip_skip;
+
+// TOTK_PRESENT_LOG=1: a line every 120 presents. A window that stays black while the frame dumps show content means the
+// blit or the present is being dropped, and this says which.
+static void present_stats(void) {
+    static unsigned long long next;
+    if (!getenv("TOTK_PRESENT_LOG")) return;
+    if (n_blit_ok + n_blit_ood + n_blit_fail < next) return;
+    next = n_blit_ok + n_blit_ood + n_blit_fail + 120;
+    rt_log("gfx: presents: blit ok %llu, out-of-date %llu, dropped %llu; flips %llu, skipped %llu", n_blit_ok, n_blit_ood,
+           n_blit_fail, n_flip_ok, n_flip_skip);
+}
+
 void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]) {
+    // The window comes up on the first present. The backend presents through blit + flip rather than vk_present_image,
+    // so this, not that, is where gfx_window_start has to be: without it every present did nothing (on the BC-250 the
+    // game ran through 681 presents, world clock and all, with no window ever created).
+    if (!g_started) gfx_window_start();
     VkCtx *c = vk_ctx();
     if (!g_started) return;
     plat_mutex_lock(&g_pl);
@@ -200,12 +217,16 @@ void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int
     uint32_t idx = 0;
     VkResult r = vkAcquireNextImageKHR(c->device, g_sc, UINT64_MAX, g_acquire[g_frame], VK_NULL_HANDLE, &idx);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
+        n_blit_ood++;
         create_swapchain();
         plat_mutex_unlock(&g_pl);
+        present_stats();
         return;
     }
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) {
+        n_blit_fail++;
         plat_mutex_unlock(&g_pl);
+        present_stats();
         return;
     }
     vkWaitForFences(c->device, 1, &g_fence[g_frame], VK_TRUE, UINT64_MAX);
@@ -231,6 +252,67 @@ void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int
     blit.dstSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     blit.dstOffsets[0] = (VkOffset3D){0, 0, 0};
     blit.dstOffsets[1] = (VkOffset3D){(int32_t)g_sc_ext.width, (int32_t)g_sc_ext.height, 1};
+    static int logged_fmt;
+    if (!logged_fmt++) rt_log("gfx: blit %dx%d format %d -> swapchain %ux%u format %d", w, h, (int)fmt, g_sc_ext.width,
+                              g_sc_ext.height, (int)g_sc_fmt);
+    // TOTK_BLIT_DUMP=1: write the image the blit reads to /tmp/blit_src.ppm, once. A red swapchain clear proves the
+    // present path works; this proves what the blit was given.
+    if (getenv("TOTK_BLIT_DUMP")) {
+        static int done;
+        if (!done) {
+            done = 1;
+            VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = (VkDeviceSize)w * h * 4,
+                                      .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT, .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+            VmaAllocationCreateInfo aci = {.usage = VMA_MEMORY_USAGE_AUTO,
+                                           .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
+                                                    VMA_ALLOCATION_CREATE_MAPPED_BIT};
+            VkBuffer db = VK_NULL_HANDLE;
+            VmaAllocation da = NULL;
+            VmaAllocationInfo di = {0};
+            if (vmaCreateBuffer(c->vma, &bci, &aci, &db, &da, &di) == VK_SUCCESS) {
+                VkBufferImageCopy cp = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                        .imageExtent = {(uint32_t)w, (uint32_t)h, 1}};
+                vkCmdCopyImageToBuffer(g_cb[g_frame], src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, db, 1, &cp);
+                image_barrier(g_cb[g_frame], src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, src_layout,
+                              VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                              VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT);
+                vkEndCommandBuffer(g_cb[g_frame]);
+                VkSubmitInfo si1 = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1,
+                                    .pCommandBuffers = &g_cb[g_frame]};
+                vk_queue_lock();
+                vkQueueSubmit(c->gfx_queue, 1, &si1, g_fence[g_frame]);
+                vk_queue_unlock();
+                vkWaitForFences(c->device, 1, &g_fence[g_frame], VK_TRUE, UINT64_MAX);
+                vkResetFences(c->device, 1, &g_fence[g_frame]);
+                vkResetCommandBuffer(g_cb[g_frame], 0);
+                vkBeginCommandBuffer(g_cb[g_frame], &bi);
+                image_barrier(g_cb[g_frame], src, src_layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                              VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+                              VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+                image_barrier(g_cb[g_frame], g_sc_img[idx], VK_IMAGE_LAYOUT_UNDEFINED,
+                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0,
+                              VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+                if (di.pMappedData) {
+                    FILE *f = fopen("/tmp/blit_src.ppm", "wb");
+                    if (f) {
+                        fprintf(f, "P6\n%d %d\n255\n", w, h);
+                        const uint8_t *px = di.pMappedData;
+                        for (long i = 0; i < (long)w * h; i++) fwrite(px + i * 4, 1, 3, f);   // drop alpha
+                        fclose(f);
+                        rt_log("gfx: blit dump written to /tmp/blit_src.ppm (%dx%d)", w, h);
+                    }
+                }
+                vmaDestroyBuffer(c->vma, db, da);
+            }
+        }
+    }
+    // TOTK_PRESENT_TEST=1: clear the swapchain image instead of blitting, to tell a broken blit from a broken present.
+    if (getenv("TOTK_PRESENT_TEST")) {
+        static const VkClearColorValue red = {{1.0f, 0.0f, 0.0f, 1.0f}};
+        VkImageSubresourceRange r = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdClearColorImage(g_cb[g_frame], g_sc_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &red, 1, &r);
+        rt_log("gfx: present test: swapchain image %u cleared red", idx);
+    } else
     vkCmdBlitImage(g_cb[g_frame], src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_sc_img[idx],
                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
     image_barrier(g_cb[g_frame], g_sc_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -255,11 +337,37 @@ void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int
     vk_queue_unlock();
     g_flip_on = 1;
     g_flip_idx = idx;
+    n_blit_ok++;
     plat_mutex_unlock(&g_pl);
+    present_stats();
+}
+
+// The window's event loop. SDL answers the compositor's pings from here -- without it KDE marks the window "not
+// responding" -- and the focus messages go to the guest the way the Windows window procedure sends them.
+static void gfx_pump_events(void) {
+    SDL_Event e;
+    while (SDL_PollEvent(&e)) {
+        switch (e.type) {
+        case SDL_EVENT_QUIT:
+            rt_log("gfx: window closed; exiting");
+            exit(0);
+        case SDL_EVENT_WINDOW_FOCUS_GAINED:
+            oe_set_focus(1);
+            oe_push_message(OE_MSG_FOCUS_STATE_CHANGED);
+            break;
+        case SDL_EVENT_WINDOW_FOCUS_LOST:
+            oe_set_focus(0);
+            oe_push_message(OE_MSG_FOCUS_STATE_CHANGED);
+            break;
+        default: break;
+        }
+    }
 }
 
 void vk_present_flip(void) {
-    if (!g_flip_on || !g_started) return;
+    if (!g_started) return;
+    gfx_pump_events();   // per frame: pings, focus, quit
+    if (!g_flip_on) { n_flip_skip++; present_stats(); return; }
     static unsigned long long presents, last_log;
     uint64_t t = (uint64_t)(plat_now_ns() / 1000000);
     VkCtx *c = vk_ctx();
@@ -271,6 +379,9 @@ void vk_present_flip(void) {
                            .pImageIndices = &g_flip_idx};
     vk_queue_lock();
     VkResult r = vkQueuePresentKHR(c->gfx_queue, &pi);
+    if (r == VK_SUCCESS) n_flip_ok++;
+    if (n_flip_ok + n_flip_skip <= 3 || (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR))
+        rt_log("gfx: present %llu: result %d", n_flip_ok + n_flip_skip, (int)r);
     vk_queue_unlock();
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) g_dirty = 1;
     presents++;

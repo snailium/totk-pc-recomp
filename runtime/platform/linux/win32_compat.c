@@ -1467,21 +1467,25 @@ DWORD WaitForSingleObject(HANDLE h, DWORD ms) {
     if (kind == K_THREAD) {
         ThreadHandle *t = h;
         if (ms == INFINITE) { pthread_join(t->thread, NULL); return WAIT_OBJECT_0; }
-        for (DWORD waited = 0; waited < ms; waited += 2) {
+        // ms == 0 is a poll and has to probe once: a counted loop `for (waited = 0; waited < ms)` never runs for it and
+        // reported every finished thread as still running, which hung WaitForMultipleObjects(..., 0) polling.
+        uint64_t deadline = mono_ns() + (uint64_t)ms * 1000000ull;
+        for (;;) {
             if (syscall(SYS_tgkill, getpid(), t->tid, 0) != 0) return WAIT_OBJECT_0;
-            Sleep(2);
+            if (mono_ns() >= deadline) return WAIT_TIMEOUT;
+            Sleep(1);
         }
-        return WAIT_TIMEOUT;
     }
     if (kind == K_PROCESS) {
         ProcessHandle *p = h;
         if (ms == INFINITE) { waitpid(p->pid, NULL, 0); return WAIT_OBJECT_0; }
-        for (DWORD waited = 0; waited < ms; waited += 2) {
+        uint64_t deadline = mono_ns() + (uint64_t)ms * 1000000ull;
+        for (;;) {
             int st;
             if (waitpid(p->pid, &st, WNOHANG) == p->pid) return WAIT_OBJECT_0;
-            Sleep(2);
+            if (mono_ns() >= deadline) return WAIT_TIMEOUT;
+            Sleep(1);
         }
-        return WAIT_TIMEOUT;
     }
     if (kind == K_EVENT) {
         EventHandle *e = h;
