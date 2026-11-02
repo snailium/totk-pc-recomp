@@ -2226,6 +2226,8 @@ void kern_guest_crash_report(const char *why, uint64_t addr) {
     rt_log("crash: %s at %#llx", why, (unsigned long long)addr);
     rt_log("  guest lr  %s", ldr_describe(c->x[30], d, sizeof d));
     rt_log("  guest pc  %s", ldr_describe(c->pc, d, sizeof d));
+    extern void rt_lastcalls_dump(int n);
+    rt_lastcalls_dump(32);
     uint64_t fp = c->x[29];
     for (int n = 0; n < 24 && fp && !(fp & 7) && fp < RT_ADDRESS_LIMIT; n++) {
         uint64_t next = 0, lr = 0;
