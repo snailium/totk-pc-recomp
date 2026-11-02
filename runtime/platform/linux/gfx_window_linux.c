@@ -287,6 +287,9 @@ void vk_present_flip(void) {
 }
 
 void vk_present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]) {
+    // The Windows implementation starts the window from present_image; the Linux one has to do the same or nothing ever
+    // creates the window and swapchain (the guest's first present is what asks for them).
+    gfx_window_start();
     vk_present_blit(src, layout, fmt, w, h, crop);
     vk_present_flip();
 }

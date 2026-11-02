@@ -184,6 +184,30 @@ static float balance[2] = {1.0f, 1.0f};
 static uint64_t start_ticks;
 __attribute__((constructor)) static void started(void) { start_ticks = rt_ticks(); }
 
+void oe_set_focus(int in_focus);
+void oe_push_message(uint32_t message);
+
+// TOTK_APPLET_TICK_MS=N: push a focus message every N ms. A diagnostic for the applet loop: the guest waits on its
+// inter-process system event with no timeout, and a console's system signals it only when it has something to say.
+static DWORD WINAPI applet_tick(void *arg) {
+    int ms = (int)(intptr_t)arg;
+    for (;;) {
+        Sleep((DWORD)ms);
+        oe_set_focus(1);
+        oe_push_message(OE_MSG_FOCUS_STATE_CHANGED);
+    }
+    return 0;
+}
+
+static void applet_tick_start(void) {
+    static int started;
+    const char *v = getenv("TOTK_APPLET_TICK_MS");
+    if (started || !v || !*v) return;
+    started = 1;
+    rt_log("oe: TOTK_APPLET_TICK_MS=%s: pushing an applet message periodically", v);
+    CreateThread(NULL, 0, applet_tick, (void *)(intptr_t)atoi(v), 0, NULL);
+}
+
 void oe_push_message(uint32_t message) {
     AcquireSRWLockExclusive(&lock);
     if (tail - head < 32) {
@@ -191,6 +215,9 @@ void oe_push_message(uint32_t message) {
         WakeAllConditionVariable(&message_cv);
     }
     ReleaseSRWLockExclusive(&lock);
+    // The system signals the guest's applet system event when it has a message; the guest waits on it with no timeout.
+    kern_applet_message_signalled();
+    applet_tick_start();
 }
 
 // void GetExpectedVolumeBalance(float *left, float *right)

@@ -2288,6 +2288,26 @@ HOST_OVERRIDE(KERN_SYM_FINALIZE_FIBER, kern_fiber_finalize);
 HOST_OVERRIDE(KERN_SYM_SWITCH_TO_FIBER, kern_fiber_switch);
 HOST_OVERRIDE(KERN_SYM_GET_CURRENT_FIBER, kern_fiber_current);
 
+// ov_system.c pushes an applet message (focus, operation mode): on a console the system then signals the inter-process
+// system event the guest made for it. The guest waits on that event with no timeout, and it created the event itself, so
+// the kernel wakes every thread waiting on an event handle -- there are only ever a handful.
+void kern_applet_message_signalled(void) {
+    lock();
+    for (RtThread *w = g_wait, *next; w; w = next) {
+        next = w->next;
+        if (w->wkind != W_SYNC) continue;
+        uint32_t h = (uint32_t)(w->wobj & 0xffffffffu);
+        if (h < 0x1000) continue;
+        int idx = (int)(h - 0x1000);
+        if (idx <= 0 || idx >= MAX_H) continue;
+        if (g_h[idx].type != O_EVENT_R && g_h[idx].type != O_EVENT_W) continue;
+        Event *e = g_h[idx].obj;
+        if (e) e->signaled = 1;
+        wake(w, R_OK);
+    }
+    unlock();
+}
+
 // SIGQUIT (platform/linux/win32_compat.c): where every guest thread is, for a hang. Lock-free on purpose: a dump takes
 // the signal stack of whatever thread asked, and the kernel lock may be held by the very thread being reported.
 // hostfn.c: what a thread is doing, for the SIGQUIT dump. A pointer to a static name, so no formatting here.
