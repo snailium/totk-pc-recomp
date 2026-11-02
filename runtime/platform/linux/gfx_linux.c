@@ -17,40 +17,6 @@
 #include "vk.h"
 
 
-// ---- input: nothing read yet
-void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
-    if (buttons) *buttons = 0;
-    if (lx) *lx = 0;
-    if (ly) *ly = 0;
-    if (rx) *rx = 0;
-    if (ry) *ry = 0;
-}
-void input_poll_ui(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
-    input_poll(buttons, lx, ly, rx, ry);
-}
-void input_block(int on) { (void)on; }
-void input_menu(int open) { (void)open; }
-int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly) {
-    input_poll(buttons, lx, ly, NULL, NULL);
-    return 1;
-}
-// A keyboard-driven pad is always present: the host hid layer and the menu both read these.
-int input_pad_layout(void) { return PAD_LAYOUT_NINTENDO; }
-int input_pad_label(int pad) { (void)pad; return PAD_LABEL_NONE; }
-int input_rumble(uint16_t low, uint16_t high, uint32_t ms) { (void)low; (void)high; (void)ms; return 0; }
-uint16_t rumble_motor(float a, float curve, float strength) {
-    (void)a; (void)curve; (void)strength;
-    return 0;
-}
-int input_rumble_triggers_enabled(void) { return 0; }
-void input_motion_start(void) {}
-int input_motion_enabled(void) { return 0; }
-void input_motion_axes(const float sdl_acc[3], const float sdl_gyro[3], double acc_g[3], double gyro[3]) {
-    (void)sdl_acc; (void)sdl_gyro;
-    memset(acc_g, 0, sizeof(double) * 3);
-    memset(gyro, 0, sizeof(double) * 3);
-}
-
 // ---- RenderDoc: debug capture only
 void rdoc_init(void) {}
 int rdoc_active(void) { return 0; }

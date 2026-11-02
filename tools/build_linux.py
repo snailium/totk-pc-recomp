@@ -115,6 +115,7 @@ def main():
     sources.append((ROOT / 'runtime' / 'platform' / 'linux.c', RT_FLAGS))
     sources.append((ROOT / 'runtime' / 'platform' / 'linux' / 'win32_compat.c', RT_FLAGS))
     sources.append((ROOT / 'runtime' / 'platform' / 'linux' / 'gfx_linux.c', RT_FLAGS))
+    sources.append((ROOT / 'runtime' / 'platform' / 'linux' / 'input_linux.c', RT_FLAGS))
     sources.append((ROOT / 'runtime' / 'platform' / 'linux' / 'gfx_window_linux.c', RT_FLAGS))
     sources.append((ROOT / 'runtime' / 'vk_vma.cpp', RT_FLAGS))   # VMA is C++: compiled with clang++ below
     sources.append((out / 'modules.c', RT_FLAGS))

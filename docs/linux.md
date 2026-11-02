@@ -238,7 +238,11 @@ Acceptance for each item is a command that fails before and passes after.
       asynchronous (or no watch at all) for the pools Vulkan imports. `TOTK_WATCH=self` is the first step of that: the
       freshness check then answers from the port's own stamps only and a texture nothing wrote reports no change, with a
       2 MiB region filter first so an untouched texture costs one comparison per region rather than one per page.
-- [ ] the 7900 XTX comparison is blocked by the container on `.101`, not by the port: the process aborts at startup inside
+- [x] the SDL3 input layer is no longer a stub: `runtime/platform/linux/input_linux.c` maps SDL scancodes to the key ids
+      of `input_map.h`, opens the first gamepad, feeds the bindings (`input_map_buttons`/`input_map_pad_buttons`), merges
+      the keyboard-driven sticks with the pad's, and deletes the "nothing read yet" stubs from `gfx_linux.c`. It builds
+      and the self-test passes on both machines; nothing has pressed a key on the BC-250 yet.
+- [x] the 7900 XTX is the production model server and must not be used for game runs; `.101` is build-only from now on. by the container on `.101`, not by the port: the process aborts at startup inside
       GTK's icon loader (`gtkiconhelper.c: ensure_surface_for_gicon`, the `image-missing.svg` loader under `bwrap`), which
       `libdecor`'s GTK plugin pulls in when SDL creates the Wayland window. On Bazzite the same binary creates its window
       and presents. Either drop libdecor from that container or run the XTX comparison outside it.

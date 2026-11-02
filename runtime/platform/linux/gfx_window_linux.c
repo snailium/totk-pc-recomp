@@ -190,6 +190,7 @@ static void image_barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, V
 }
 
 static void gfx_pump_events(void);
+void input_linux_event(const SDL_Event *e);   // input_linux.c
 static int n_quit_logged;
 static unsigned long long n_blit_ok, n_blit_ood, n_blit_fail, n_flip_ok, n_flip_skip;
 
@@ -375,6 +376,7 @@ static void gfx_pump_events(void) {
             break;
         default: break;
         }
+        input_linux_event(&e);
     }
 }
 
