@@ -355,7 +355,9 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     vkBeginCommandBuffer(s->cb, &bi);
     ts_begin(s->cb);
     rec_begin(s->cb);
+    uint64_t wr0 = waitstat_now();
     int recorded = vk_exec_record(s->cb, handles, n, fence);
+    waitstat_add("replay record", waitstat_now() - wr0);
     s = &slots[cur_slot];   // the last part (vk_sync_split)
     rec_end();
     if (recorded) ts_end(s->cb, fence);
