@@ -126,6 +126,7 @@ static uint64_t g_main_stack;
 
 static void lock(void) { AcquireSRWLockExclusive(&G); }
 static void poke_start(void);
+static int sync_log(void);
 static void unlock(void) { ReleaseSRWLockExclusive(&G); }
 
 uint64_t kern_now_ns(void) { return plat_now_ns(); }
@@ -1815,6 +1816,11 @@ int kern_svc(Cpu *c, uint32_t imm) {
         }
         t->wobj = key;
         uint32_t r = block(t, W_CONDVAR, (int64_t)x[3]);   // on timeout user mode takes the lock itself
+        if (r != R_OK && sync_log()) {
+            char d[96];
+            rt_logf("sync: wait on key %#llx timed out (result %#x) from %s\n", (unsigned long long)key, r,
+                    ldr_describe(x[30], d, sizeof d));
+        }
         unlock();
         x[0] = r;
         return 1;
@@ -1827,6 +1833,11 @@ int kern_svc(Cpu *c, uint32_t imm) {
         int left = 0;
         for (RtThread *w = g_wait; w && !left; w = w->next) left = w->wkind == W_CONDVAR && w->wkey == key;
         if (!left) st32(key, 0);
+        if (sync_log() && !n) {
+            char d[96];
+            rt_logf("sync: signal on key %#llx woke nobody (count %d) from %s\n", (unsigned long long)key, cnt,
+                    ldr_describe(x[30], d, sizeof d));
+        }
         unlock();
         x[0] = R_OK;
         return 1;
@@ -2312,6 +2323,17 @@ void kern_dump_threads(const char *why) {
     }
     dprintf(2, "threads: %d total, %llu created\n", n, (unsigned long long)g_created);
     __atomic_store_n(&busy, 0, __ATOMIC_RELEASE);
+}
+
+// TOTK_SYNC_LOG=1: process-wide key waits that time out and signals that wake nobody. A lost wake-up leaves a guest
+// thread waiting for ever while the signaller believes it handed the work over.
+static int sync_log(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("TOTK_SYNC_LOG");
+        on = v && *v == '1';
+    }
+    return on;
 }
 
 // TOTK_POKE_EVENT=<handle>: signal that event every few milliseconds from a host thread. A diagnostic for the boot

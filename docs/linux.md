@@ -312,6 +312,10 @@ that a `RESET` query reports none.
   signalled by host code tens of thousands of times, so the loop does run; the other (0x1003, the game's own
   `InterProcessEvent::Create`) is waited on and **never signalled by anything**. Nothing is blocked on a lock; the
   loader threads sit idle in `ReceiveLightMessageQueue` because no work reaches them.
+- `TOTK_SYNC_LOG=1` logs process-wide key waits that time out and signals that wake nobody. In the frozen state the only
+  key in play is one address (`0x15584cd5c`), with `InternalConditionVariableImplByHorizon::TimedWait` timing out and
+  `nn::os::WaitTimerEvent` signalling afterwards: the SDK's timer condition variable, about 1900 times a second, and
+  nothing else. No loader is stuck on a lost wake-up.
 - `TOTK_THREAD_LOG=1` logs each guest thread's exit with its entry point; `kill -QUIT` now also reports how many threads
   were created against how many are alive. In the frozen state that is 51 created, 50 alive, one normal exit
   (`sdk+0x1302a0`, the SDK's thread start trampoline), so no loader thread died on the way.
