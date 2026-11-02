@@ -185,7 +185,11 @@ Acceptance for each item is a command that fails before and passes after.
       `detail::WaitInterProcessEvent` into `InterProcessEventImplByHorizon::Wait`. `TOTK_ASSUME_FOCUS=1` changes
       nothing. The host-call sequence is identical to the Windows build for 174 calls and then diverges: Windows goes
       into `nn::codec` (hardware Opus), the play report save and `nvnQueuePresentTexture`, while the port goes into
-      `nn::fs::SetPriorityOnCurrentThread` and file reads — it is still loading when Windows is presenting — the boot now loads content (`/RSDB/*.rstbl.byml.zs`,
+      `nn::fs::SetPriorityOnCurrentThread` and file reads — it is still loading when Windows is presenting.
+      The port is not idle while it waits: a 60 s run makes 5455 `AllocateMemoryPages` calls (the NVN command buffer
+      memory callback, ~45 frames a second) while `nvnWindowAcquireTexture` is called once and
+      `nvnQueuePresentTexture` never, so the guest renders the loading screen into the window texture it holds and
+      presents only when loading finishes — the boot now loads content (`/RSDB/*.rstbl.byml.zs`,
       `/Pack/*.pack.zs`) and stops in the SDK's own `memcpy` (`f_70007bfa6c`/`f_70007bfa94`, deterministic, from
       `f_70007bd0b0`). The copy overruns its source: `si_addr` is `0x737265cc`, inside the heap but past the source
       object, so the length or the end pointer the caller passes is wrong. Next: read the argument setup in
