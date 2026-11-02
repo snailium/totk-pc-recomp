@@ -67,6 +67,15 @@ has no system, so nothing signals it, and the boot parks there.
 that diagnostic looked the handle up as a *writable* event while the guest waits on the *readable* end, which is why an
 earlier run wrongly "ruled out" this event.
 
+## Where the 40-round session stopped
+
+Verified on the final round: `tools/build_linux.py` builds 464 objects into a 260 MiB ELF, `--selftest` passes from the
+build directory and from `dist/totk-linux` (bundled SDL3/opus/libvpx/zstd included), and `readelf -V` reports
+`GLIBC_2.38` as the highest symbol version. The game boots to the loading screen and stops at the deadlock above; the
+input layer is still the no-op in `runtime/platform/linux/gfx_linux.c`, and neither the BC-250 nor the Steam Machine has
+been reachable for the whole session (`ssh bc250@192.168.111.144`, `ssh deck@192.168.111.142`: `No route to host`), so
+the end-to-end validation the objective asks for has not happened.
+
 ## How to continue
 
 1. Find what should signal the object at `0x133312120` inside the submit thread. It is a guest object in the heap; the
