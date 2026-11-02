@@ -228,6 +228,14 @@ Acceptance for each item is a command that fails before and passes after.
       sections were not recursive (a self-deadlock in `vk_staging` on the first texture upload of a replay), and
       `WaitForSingleObject` on a thread handle never reported a finished thread for a zero timeout (the boot prewarm hung
       on 187 shaders that were all done).
+- [ ] the write watch decides freshness wrongly on Linux, and that is what the frame rate follows. With userfaultfd
+      `WP_ASYNC` the dirty bits never clear: `PM_SCAN_WP_MATCHING` re-protects the pages but leaves `PAGE_IS_WRITTEN`
+      set, so `GetWriteWatch` reports the same pages for ever (a `clear_refs(4)` per submission, `mem_write_watch_epoch`,
+      does not change that). The mprotect trap flavour resets exactly and the freshness check then reports no change --
+      but write-protecting guest memory that Vulkan imports makes amdgpu reject the submission (`VK_ERROR_DEVICE_LOST`,
+      "the CS has been rejected"), and the soft-dirty flavour, whose reset does work, needs its ranges raised past the
+      6 GiB app pool before it tracks anything. The fix is a hybrid: trap flavour for the CPU-side reservations,
+      asynchronous (or no watch at all) for the pools Vulkan imports.
 - [ ] the frame rate is 2.5 fps and the loading screen never finishes because textures are re-uploaded every frame:
       21,504 uploads in 150 s, each with a new page generation. The mirror writeback writes GPU results into guest memory
       under the write watch, so the port's own writeback looks like a CPU write and every texture is decoded again.

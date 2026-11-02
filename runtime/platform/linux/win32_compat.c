@@ -1057,8 +1057,10 @@ float log10f(float x) { return (float)log10((double)x); }
 // written since then. The bits are process-wide, so a scan must read every tracked range before the bits are cleared
 // again, and a range too large to scan cheaply stays untracked (its callers then treat every page as written).
 static int g_sd_clear = -1, g_sd_pagemap = -1, g_sd_on;
-static const size_t SD_MAX_RANGE = 512u << 20;   // per range
-static const size_t SD_MAX_TOTAL = 2ull << 30;   // all ranges together
+// The soft-dirty flavour is the only one whose reset works (clear_refs clears the bit; PM_SCAN_WP_MATCHING does not), so
+// it has to cover the guest's own reservations: a 6 GiB app pool is one range, and the alias region is another.
+static const size_t SD_MAX_RANGE = 12ull << 30;  // per range
+static const size_t SD_MAX_TOTAL = 40ull << 30;  // all ranges together
 static size_t g_sd_total;
 
 static int sd_init(void) {

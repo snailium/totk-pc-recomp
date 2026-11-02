@@ -689,11 +689,6 @@ static void make_fresh_snap(Tex *e) {
     uint32_t now;
     n_checks++;
     int ch = vk_mem_changed_snap(e->pub.addr, e->t.L.size, e->uploaded ? e->wgen : 0, submit_epoch, &now);
-    static volatile long n_dbg;
-    long dbg = InterlockedIncrement(&n_dbg);
-    if (dbg <= 600)
-        rt_log("vk: freshness %ld: %#llx %ux%u uploaded %d ch %d wgen %u->%u epoch %u", dbg, (unsigned long long)e->pub.addr,
-               e->t.d.width, e->t.d.height, e->uploaded, ch, e->wgen, now, submit_epoch);
     e->wgen = now;
     if (!e->uploaded) { upload(e); return; }
     e->last_ch = ch;
