@@ -246,6 +246,8 @@ Acceptance for each item is a command that fails before and passes after.
       GTK's icon loader (`gtkiconhelper.c: ensure_surface_for_gicon`, the `image-missing.svg` loader under `bwrap`), which
       `libdecor`'s GTK plugin pulls in when SDL creates the Wayland window. On Bazzite the same binary creates its window
       and presents. Either drop libdecor from that container or run the XTX comparison outside it.
+- [x] import mode (`TOTK_MEMORY=0`) does not change the frame rate on the BC-250 either (12.4 against 12.7 fps), so the
+      mirror traffic is not what bounds the frame there: the GPU work and the recording both stay.
 - [x] the replay's 16 ms per submission is mostly the mirror upload: the dirty census prints `submits_per_frame 1.00`
       with `eager_mib 24.496/29.781/51.809`, about 106 MiB uploaded per submit, because the mirror's own dirty test
       (`page_dirty`) still falls back to `mem_written_peek` on the OS write watch, whose bits never clear on Linux. The
