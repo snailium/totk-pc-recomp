@@ -509,24 +509,37 @@ HANDLE CreateFileW(const WCHAR *path, DWORD access, DWORD share, void *sa, DWORD
     return CreateFileA(p, access, share, sa, disposition, flags, tmpl);
 }
 
-BOOL ReadFile(HANDLE h, void *buf, DWORD n, DWORD *got, void *ov) {
-    (void)ov;
+// Positional I/O: the runtime reads RomFS and save files through OVERLAPPED offsets on synchronous handles, so the
+// offset in the structure is the whole point of the call.
+BOOL ReadFile(HANDLE h, void *buf, DWORD n, DWORD *got, void *ovp) {
+    OVERLAPPED *ov = ovp;
     FileHandle *f = h;
     if (!f || f->kind != K_FILE) return FALSE;
-    ssize_t r = read(f->fd, buf, n);
+    ssize_t r;
+    if (ov) {
+        off_t off = (off_t)(((uint64_t)ov->OffsetHigh << 32) | ov->Offset);
+        r = pread(f->fd, buf, n, off);
+    } else {
+        r = read(f->fd, buf, n);
+    }
     if (r < 0) { SetLastError(errno); return FALSE; }
     if (got) *got = (DWORD)r;
+    if (r == 0 && n > 0) {   // a positional read past the end: the runtime expects ERROR_HANDLE_EOF here
+        SetLastError(ERROR_HANDLE_EOF);
+        return FALSE;
+    }
     return TRUE;
 }
 
-BOOL WriteFile(HANDLE h, const void *buf, DWORD n, DWORD *written, void *ov) {
-    (void)ov;
+BOOL WriteFile(HANDLE h, const void *buf, DWORD n, DWORD *written, void *ovp) {
+    OVERLAPPED *ov = ovp;
     FileHandle *f = h;
     if (!f || f->kind != K_FILE) return FALSE;
+    off_t off = ov ? (off_t)(((uint64_t)ov->OffsetHigh << 32) | ov->Offset) : -1;
     const uint8_t *p = buf;
     DWORD done = 0;
     while (done < n) {
-        ssize_t w = write(f->fd, p + done, n - done);
+        ssize_t w = off >= 0 ? pwrite(f->fd, p + done, n - done, off + done) : write(f->fd, p + done, n - done);
         if (w <= 0) { SetLastError(errno); return FALSE; }
         done += (DWORD)w;
     }

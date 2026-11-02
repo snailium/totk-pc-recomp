@@ -144,14 +144,16 @@ Acceptance for each item is a command that fails before and passes after.
 - [x] async preemption is active: the linker now puts all generated code after the runtime, so the "lifted code"
       address range no longer swallows host functions (`lifted code exe+0x1e037f0-exe+0xee9f2e0`), and `OpenThread`
       answers for the calling thread even when it was not created through `CreateThread`
-- [ ] title screen on `.101` and on BC-250 Bazzite — a guest fault remains: `f_70011266c4` is a constructor whose
-      object pointer is NULL, because the lookup in `f_70007fa8f0` (`main+0x462d000+0xeb0` singleton, then a list walk)
-      finds nothing. The fault address is `0x8`, i.e. `movb $0,(%rax+8)` with `rax = 0`. Reproduces with
-      `TOTK_ASYNC_PREEMPT=0` and with `TOTK_INPUT=none`. `TOTK_LOGHOSTRET=1` (hostfn.c) logs the x0 a host call
-      leaves behind; the last host returns before the fault are all void overloads (`InitializeNpad`,
-      `SetSupportedNpadIdType`, `SetSupportedNpadStyleSet`), so the NULL is not a host return value. The Windows
-      comparison is still the next step: the Wine container falls back to llvmpipe, where the boot prewarm of 27,977
-      shaders takes minutes and hides the sequence — blocked on a display with DRI3: `.101` has
+- [x] positional reads: `ReadFile`/`WriteFile` now honour the `OVERLAPPED` offset. The runtime reads every RomFS file
+      through it, so without the fix every read returned whatever the file position happened to be — the layout
+      archives parsed into nothing, which is what produced the NULL object in `f_70011266c4`
+- [x] the RomFS overlay applies: `RomFS ready: 304473 files, 1 overlays` after `tools/make_romfs_patches.py` writes
+      `romfs-patches/` next to the binary (the installer's prepare step does this on Windows)
+- [x] async preemption dispatches interrupts (`kernel: interrupt 0x1009 p47 ...`), as on Windows
+- [ ] title screen on `.101` and on BC-250 Bazzite — the boot now goes past the old NULL and stops later, at
+      `f_70007bfa94` with `si_addr = 0x737265cc` (ASCII "srec"/"src" — a string used as a pointer), reached from
+      `nnMain` through `f_70007bd0b0`, `f_7000a68dd4`; that needs the same treatment: read the lifted C around the
+      faulting load and find which structure holds the string — blocked on a display with DRI3: `.101` has
       no connected output and Xvfb has no DRI3, so the port boots with `
       vk: no usable Vulkan device` and stops at graphics init
 
