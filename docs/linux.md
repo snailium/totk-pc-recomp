@@ -437,3 +437,30 @@ inside the NVN replay (see *Status*). The next steps, in the order they would be
 - No Wine/Proton shim in the native path.
 - No new upstream features (HDR, VRR, ultrawide) before the two targets run.
 - Windows behaviour must stay byte-for-byte buildable; `tools/check_content.py` rules still apply.
+
+## Getting to 50 fps on the BC-250: the measured budget and the order to attack it
+
+The frame is 79 ms at 12.6 fps and none of the scheduling, splitting, replay-thread or memory-mode knobs move it (see the
+status list). What is left, with the numbers the wait table and the frame log already give:
+
+| Cost | Per frame | Where it comes from |
+|---|---|---|
+| replay recording | 31 ms | 300 draws and 130 passes recorded into Vulkan calls: about 100 us per draw |
+| GPU submit | 20 ms | the kernel submission blocks while the queue is full |
+| present blit | 23 ms | a second submit, and the GPU work ahead of it |
+
+The order to try, cheapest evidence first:
+
+1. **Fold the present into the replay's submission.** The blit is its own `vkQueueSubmit2` plus a timeline value; recording
+   it at the end of the replay's command buffer removes one submission and one queue wait per frame. Expected: up to
+   20 ms.
+2. **Counter-based profile of the draw handler.** A tail-to-head timer inside the op loop reads the wrong clock here, so
+   accumulate per phase (pipeline resolve, descriptor write, binding, `vkCmdDraw*`) with counters instead of subtracting
+   timestamps. 100 us per draw is far too much for the work, and the answer is in that split.
+3. **Cut GPU work.** 23 ms of blit wait means the GPU has a full frame of work; the frame log counts seven 1080p targets
+   and a long tail of smaller ones per frame, so look for repeated full-screen passes and for attachments that are loaded
+   and stored without being read.
+4. Only after those: revisit the mirror, which the dirty census says uploads about 106 MiB per submission because its
+   dirty test still falls back to an OS write watch that cannot reset on Linux.
+
+Target: 20 ms per frame. The GPU at 40 CU and 386 GB/s is not the limit; the port's own per-draw and per-submit work is.
