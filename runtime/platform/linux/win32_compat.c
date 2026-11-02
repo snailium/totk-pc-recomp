@@ -48,6 +48,7 @@ void rt_logf(const char *fmt, ...);   // host.h: the runtime log
 #endif
 #include <strings.h>
 #include <sys/statvfs.h>
+#include <poll.h>
 #include <sys/wait.h>
 #include <ucontext.h>
 #include <unistd.h>
@@ -802,32 +803,77 @@ int _stricmp(const char *a, const char *b) { return strcasecmp(a, b); }
 int _strnicmp(const char *a, const char *b, size_t n) { return strncasecmp(a, b, n); }
 
 
+#define WATCH_MAX 64
+typedef struct Watch {
+    uintptr_t base;
+    size_t size;
+    uint8_t *dirty;   // one byte per 4 KiB page (trap flavour only)
+    int kernel_tracked; // 1: userfaultfd tracks writes, so a fault here is a mapping fault, not a watch write
+    int sd_tracked;     // 1: soft-dirty bits track writes (fallback; the bits are process-wide)
+} Watch;
+static Watch *watch_for(uintptr_t addr);
+
 // ---- write watch through userfaultfd
 //
 // The kernel's own dirty-bit tracking, the same mechanism Wine uses: a range is write-protected asynchronously
 // (UFFD_FEATURE_WP_ASYNC) so writes never fault, and PAGEMAP_SCAN reads the pages marked written; scanning with
 // PM_SCAN_WP_MATCHING re-arms them. No faults, no traps, and the guest stack and GPU-imported pools stay writable.
 static int g_uffd = -1, g_pagemap = -1, g_uffd_watch;
+static int g_force_trap;
+
+// One event per first write of a page since its write protection: record the page in its watch and let the write go
+// through by clearing the page's write-protect bit.
+static void *uffd_thread(void *arg) {
+    (void)arg;
+    struct pollfd pfd = {.fd = g_uffd, .events = POLLIN};
+    for (;;) {
+        if (poll(&pfd, 1, -1) <= 0) continue;
+        struct uffd_msg msg;
+        if (read(g_uffd, &msg, sizeof msg) != (ssize_t)sizeof msg) continue;
+        if (msg.event != UFFD_EVENT_PAGEFAULT) continue;
+        uintptr_t addr = (uintptr_t)msg.arg.pagefault.address & ~(uintptr_t)4095;
+        Watch *w = watch_for(addr);
+        if (w) {
+            size_t page = (addr - w->base) / 4096;
+            if (page < w->size / 4096) __atomic_store_n(&w->dirty[page], 1, __ATOMIC_RELAXED);
+        }
+        struct uffdio_writeprotect wp = {.range = {addr, 4096}, .mode = 0};
+        ioctl(g_uffd, UFFDIO_WRITEPROTECT, &wp);
+    }
+    return NULL;
+}
+
+// PM_SCAN_WP_MATCHING re-protects the pages but leaves PAGE_IS_WRITTEN set, so without this every page would be reported
+// as written for ever and every texture re-uploaded. clear_refs(4) resets the soft-dirty bits; it walks the page tables,
+// so it runs once per submission (mem_write_watch_epoch), not once per query.
+static int g_clear_refs = -1;
+
+void mem_write_watch_epoch(void) {
+    if (!g_uffd_watch || g_clear_refs < 0) return;
+    if (pwrite(g_clear_refs, "4", 1, 0) != 1) g_clear_refs = -1;
+}
 
 static int uffd_init(void) {
     if (g_uffd_watch) return 1;
     const char *mode = getenv("TOTK_WRITE_WATCH");
     if (mode && !strcmp(mode, "softdirty")) return 0;   // force the fallback, for testing it
+    if (mode && !strcmp(mode, "trap")) { g_force_trap = 1; return 0; }   // force the mprotect flavour
     if (g_uffd < 0) {
         g_uffd = (int)syscall(SYS_userfaultfd, O_CLOEXEC | O_NONBLOCK | UFFD_USER_MODE_ONLY);
         if (g_uffd < 0) {
             rt_logf("watch: userfaultfd unavailable (seccomp?); write watch reports untracked pages\n");
             return 0;
         }
+        // WP_ASYNC: writes never fault, which GPU-imported buffers need -- amdgpu pins those pages for DMA with
+        // FOLL_WRITE, and a write-protected page makes it reject the submission (VK_ERROR_DEVICE_LOST). The dirty bits
+        // therefore come from PAGEMAP_SCAN, and the epoch reset below clears them.
         struct uffdio_api api = {.api = UFFD_API, .features = UFFD_FEATURE_WP_ASYNC | UFFD_FEATURE_WP_UNPOPULATED};
-        if (ioctl(g_uffd, UFFDIO_API, &api)) {
-            api.features = UFFD_FEATURE_WP_ASYNC;
-            if (ioctl(g_uffd, UFFDIO_API, &api)) { close(g_uffd); g_uffd = -1; return 0; }
-        }
+        if (ioctl(g_uffd, UFFDIO_API, &api)) { close(g_uffd); g_uffd = -1; return 0; }
         g_pagemap = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
         if (g_pagemap < 0) { close(g_uffd); g_uffd = -1; return 0; }
     }
     g_uffd_watch = 1;
+    if (g_clear_refs < 0) g_clear_refs = open("/proc/self/clear_refs", O_WRONLY | O_CLOEXEC);
     rt_logf("watch: userfaultfd write watch active (WP_ASYNC, kernel dirty bits)\n");
     return 1;
 }
@@ -882,14 +928,6 @@ static size_t uffd_written(uintptr_t base, size_t size, uint64_t *pages, size_t 
 // the slow of the three implementations platform/linux.c is meant to offer (userfaultfd and soft-dirty come later);
 // it is correct, which is what the first bring-up needs.
 
-#define WATCH_MAX 64
-typedef struct {
-    uintptr_t base;
-    size_t size;
-    uint8_t *dirty;   // one byte per 4 KiB page (trap flavour only)
-    int kernel_tracked; // 1: userfaultfd tracks writes, so a fault here is a mapping fault, not a watch write
-    int sd_tracked;     // 1: soft-dirty bits track writes (fallback; the bits are process-wide)
-} Watch;
 
 static Watch g_watch[WATCH_MAX];
 static pthread_mutex_t g_watch_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -1082,7 +1120,7 @@ static size_t sd_collect(uintptr_t base, size_t size, uint64_t *pages, size_t ma
 static void watch_register(void *base, size_t n) {
     int kernel = uffd_init() && uffd_watch((uintptr_t)base, n);
     int sd = 0;
-    if (!kernel && n <= SD_MAX_RANGE && g_sd_total + n <= SD_MAX_TOTAL && sd_init()) {
+    if (!kernel && !g_force_trap && n <= SD_MAX_RANGE && g_sd_total + n <= SD_MAX_TOTAL && sd_init()) {
         sd = 1;
         g_sd_total += n;
     }

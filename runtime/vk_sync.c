@@ -388,6 +388,8 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     static unsigned subs;
     if (++subs % 4096 == 0) rec_stats_log();
     ReleaseSRWLockExclusive(&sub_lock);
+    // Once per submission: the write watch's dirty bits (see mem_write_watch_epoch).
+    mem_write_watch_epoch();
     if (sublog()) rt_log("vk: submit %llu: done", (unsigned long long)fence);
     return fence;
 }

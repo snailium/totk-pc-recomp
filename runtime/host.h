@@ -147,6 +147,9 @@ uint32_t mem_unmap_physical(uint64_t a, uint64_t n);                            
 int mem_info(uint32_t id, uint64_t *out);                  // GetInfo memory ids 2-7, 12-17, 21, 22, 28; 0 if not a memory id
 void *mem_kernel_alloc(uint64_t size, uint64_t align);     // zeroed, guest-visible, in the kernel region; align <= 64 KiB
 uint64_t mem_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, uint64_t max);
+// Linux: reset the write watch's kernel dirty bits once per submission. PAGEMAP_SCAN's PM_SCAN_WP_MATCHING re-protects
+// pages but leaves PAGE_IS_WRITTEN set, so without this every page stays written for ever.
+void mem_write_watch_epoch(void);
                                                            // GetWriteWatch(RESET): fills pages[] (4 KiB addresses)
                                                            // with the pages of [addr, addr+size) written since the
                                                            // last call, returns their count (at most max; a page
