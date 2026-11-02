@@ -125,6 +125,7 @@ static uint64_t g_next_id = 0x51, g_wseq, g_created;
 static uint64_t g_main_stack;
 
 static void lock(void) { AcquireSRWLockExclusive(&G); }
+static void poke_start(void);
 static void unlock(void) { ReleaseSRWLockExclusive(&G); }
 
 uint64_t kern_now_ns(void) { return plat_now_ns(); }
@@ -1902,6 +1903,7 @@ int kern_svc(Cpu *c, uint32_t imm) {
         x[0] = R_OK;
         x[1] = hw;
         x[2] = hr;
+        poke_start();
         return 1;
     }
     case 0x11: case 0x12: case 0x17: {   // SignalEvent(writable), ClearEvent(either end), ResetSignal(readable)
@@ -2304,6 +2306,31 @@ void kern_dump_threads(const char *why) {
     }
     dprintf(2, "threads: %d total\n", n);
     __atomic_store_n(&busy, 0, __ATOMIC_RELEASE);
+}
+
+// TOTK_POKE_EVENT=<handle>: signal that event every few milliseconds from a host thread. A diagnostic for the boot
+// stall: the guest waits on a system event whose peer on a console is the system (applet messages), and nothing in the
+// port plays that peer.
+static DWORD WINAPI poke_body(void *arg) {
+    uint32_t h = (uint32_t)(uintptr_t)arg;
+    for (;;) {
+        Sleep(5);
+        lock();
+        Event *e = h_peek(h, O_EVENT_W);
+        if (e) { e->signaled = 1; wake_sync_waiters(); }
+        unlock();
+    }
+    return 0;
+}
+
+static void poke_start(void) {
+    static int started;
+    const char *v = getenv("TOTK_POKE_EVENT");
+    if (started || !v || !*v) return;
+    started = 1;
+    uint32_t h = (uint32_t)strtoul(v, NULL, 0);
+    rt_log("kernel: TOTK_POKE_EVENT: signalling event %#x every 5 ms", h);
+    CreateThread(NULL, 0, poke_body, (void *)(uintptr_t)h, 0, NULL);
 }
 
 // A guest fault outside every range the host handles: print the guest stack so the failure names its function. Called

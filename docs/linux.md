@@ -190,6 +190,8 @@ Acceptance for each item is a command that fails before and passes after.
       memory callback, ~45 frames a second) while `nvnWindowAcquireTexture` is called once and
       `nvnQueuePresentTexture` never, so the guest renders the loading screen into the window texture it holds and
       presents only when loading finishes
+- [ ] poking the game's own system event (`TOTK_POKE_EVENT=0x1003`, a host thread signalling it every 5 ms) changes
+      nothing, so that event is not what the boot waits for
 - [ ] the stall is frozen, not slow: three samples 45 s apart in one 400 s run show the same 6817 log lines, the same
       5455 `AllocateMemoryPages` and no present; no translator process is alive, so nothing is being compiled either.
       50 guest threads and 63 host threads exist; every guest thread sits in an SDK wait (`ReceiveLightMessageQueue`,
