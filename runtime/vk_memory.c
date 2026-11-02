@@ -648,8 +648,33 @@ void vk_guest_written(uint64_t addr, uint64_t size) {
     ReleaseSRWLockExclusive(&gen_lock);
 }
 
+// TOTK_WATCH=self: decide freshness from the port's own stamps only (vk_guest_written, WriteTexels, GPU copies
+// reported at their fence) and never query the OS write watch. The kernel's dirty bits are the expensive and, on Linux,
+// unreliable part: PM_SCAN_WP_MATCHING leaves PAGE_IS_WRITTEN set, so a query reports the same pages for ever.
+static int watch_self(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("TOTK_WATCH");
+        on = v && !strcmp(v, "self");
+    }
+    return on;
+}
+
 int vk_mem_changed(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now) {
     if (!size) { *now = since; return 0; }
+    if (watch_self()) {
+        uint64_t lo = addr & ~0xfffull, hi = (addr + size + 0xfff) & ~0xfffull;
+        AcquireSRWLockExclusive(&gen_lock);
+        uint32_t g = ++gen_now;
+        int changed = 0;
+        for (uint64_t a = lo; a < hi && !changed; a += 1ull << GEN_PAGE_SHIFT) {
+            uint32_t *st = gen_slot(a, 0);
+            if (st && *st > since) changed = 1;
+        }
+        ReleaseSRWLockExclusive(&gen_lock);
+        *now = g;
+        return changed;
+    }
     uint64_t lo = addr & ~0xfffull, hi = (addr + size + 0xfff) & ~0xfffull;
     AcquireSRWLockExclusive(&gen_lock);
     uint32_t g = ++gen_now;
@@ -697,6 +722,11 @@ static uint64_t snap_regions(uint64_t r0, uint64_t r1, uint32_t epoch) {
         uint64_t k = r;   // one query over a run of regions not seen in this epoch
         while (k + 1 <= r1 && snap_at[k + 1] != epoch && !mem_frozen((k + 1) << SNAP_SHIFT)) k++;
         uint64_t a = r << SNAP_SHIFT, b = (k + 1) << SNAP_SHIFT;
+        if (watch_self()) {   // no OS query at all: the port's own stamps are the only source
+            for (uint64_t q = r; q <= k; q++) snap_at[q] = epoch, snap_untracked[q] = 0;
+            r = k + 1;
+            continue;
+        }
         int tracked = 1;
         if (!g) g = ++gen_now;
         for (;;) {

@@ -189,6 +189,8 @@ static void image_barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, V
     vkCmdPipelineBarrier2(cb, &dep);
 }
 
+static void gfx_pump_events(void);
+static int n_quit_logged;
 static unsigned long long n_blit_ok, n_blit_ood, n_blit_fail, n_flip_ok, n_flip_skip;
 
 // TOTK_PRESENT_LOG=1: a line every 120 presents. A window that stays black while the frame dumps show content means the
@@ -209,6 +211,7 @@ void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int
     if (!g_started) gfx_window_start();
     VkCtx *c = vk_ctx();
     if (!g_started) return;
+    gfx_pump_events();
     plat_mutex_lock(&g_pl);
     if (g_dirty && !create_swapchain()) {
         plat_mutex_unlock(&g_pl);
@@ -353,10 +356,15 @@ skip_dump:
 static void gfx_pump_events(void) {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
+        if (getenv("TOTK_PRESENT_LOG") && e.type != SDL_EVENT_MOUSE_MOTION && e.type != SDL_EVENT_WINDOW_EXPOSED &&
+            e.type != SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
+            rt_log("gfx: event %u", (unsigned)e.type);
         switch (e.type) {
         case SDL_EVENT_QUIT:
-            rt_log("gfx: window closed; exiting");
-            exit(0);
+            // The compositor asked the window to close (KDE does that when a client misses its pings, which a slow frame
+            // can cause). Keep running: the guest has no way to reopen the window, and exiting loses the session.
+            if (!n_quit_logged++) rt_log("gfx: window close requested; ignoring it and keeping the surface");
+            break;
         case SDL_EVENT_WINDOW_FOCUS_GAINED:
             oe_set_focus(1);
             oe_push_message(OE_MSG_FOCUS_STATE_CHANGED);
