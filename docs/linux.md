@@ -151,7 +151,10 @@ Acceptance for each item is a command that fails before and passes after.
       `romfs-patches/` next to the binary (the installer's prepare step does this on Windows)
 - [x] async preemption dispatches interrupts (`kernel: interrupt 0x1009 p47 ...`), as on Windows
 - [x] the boot reaches the same stage as the Windows build: audio (`audren: renderer open`), the save mount, the first
-      Vulkan replay and the game's first vibration value. Three portability bugs stood in the way: `GetFileAttributesW`
+      Vulkan replay and the game's first vibration value.
+- [x] save commits work: `ReadFile` reported `ERROR_HANDLE_EOF` (38) for a *sequential* read at the end of a file,
+      which `copy_file_w` treats as an error, so every commit failed with "copying the working copy failed (error 38)".
+      Only a positional read past the end reports that now. Three portability bugs stood in the way: `GetFileAttributesW`
       failed without setting a Win32 error (so a missing directory looked like `ERROR_ALREADY_EXISTS`), paths built with
       backslashes did not resolve, and a fresh profile (no committed save) made the save working copy fail
 - [ ] **async preemption: the interruption half corrupts guest state.** `TOTK_ASYNC_PREEMPT=2` (priority inheritance

@@ -15,6 +15,10 @@ void kern_dump_threads(const char *why);   // kernel.c: SIGQUIT prints every gue
 static void quit_handler(int sig) {
     (void)sig;
     kern_dump_threads("SIGQUIT");
+    // The interrupted thread's own last calls (TOTK_LASTCALLS=1): the loop that the dump cannot see, since the lifted
+    // code has no frame pointers.
+    extern void rt_lastcalls_dump(int n);
+    rt_lastcalls_dump(16);
 }
 
 static void install_quit_handler(void) {
@@ -568,7 +572,9 @@ BOOL ReadFile(HANDLE h, void *buf, DWORD n, DWORD *got, void *ovp) {
     }
     if (r < 0) { SetLastError(errno); return FALSE; }
     if (got) *got = (DWORD)r;
-    if (r == 0 && n > 0) {   // a positional read past the end: the runtime expects ERROR_HANDLE_EOF here
+    // A positional read past the end reports ERROR_HANDLE_EOF (romfs.c and fs_host.c read_at test for it); a plain
+    // sequential read at the end succeeds with 0 bytes, as Windows does — copy_file_w treats FALSE as a failure.
+    if (r == 0 && n > 0 && ov) {
         SetLastError(ERROR_HANDLE_EOF);
         return FALSE;
     }

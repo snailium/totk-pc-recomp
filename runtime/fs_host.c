@@ -212,30 +212,38 @@ static int move_dir_w(const wchar_t *from, const wchar_t *to) {
 
 // Copy one file; the source may be open for writing (a save file the game has not closed). 0 on success.
 static int copy_file_w(const wchar_t *src, const wchar_t *dst, int durable, uint64_t *bytes) {
+    const char *stage = "open source";
     HANDLE in = CreateFileW(src, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
                             OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
-    if (in == INVALID_HANDLE_VALUE) return -1;
+    if (in == INVALID_HANDLE_VALUE) goto fail;
+    stage = "create destination";
     HANDLE out = CreateFileW(dst, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
     if (out == INVALID_HANDLE_VALUE) {
         CloseHandle(in);
-        return -1;
+        goto fail;
     }
     uint8_t *buf = malloc(COPY_CHUNK);
     need(buf != NULL, "copy buffer");
     int ok = 1;
     for (;;) {
         DWORD got = 0, put = 0;
-        if (!ReadFile(in, buf, COPY_CHUNK, &got, NULL)) ok = 0;
+        stage = "read";
+        if (!ReadFile(in, buf, COPY_CHUNK, &got, NULL)) { stage = "read"; ok = 0; }
         if (!ok || !got) break;
-        if (!WriteFile(out, buf, got, &put, NULL) || put != got) ok = 0;
+        stage = "write";
+        if (!WriteFile(out, buf, got, &put, NULL) || put != got) { stage = "write"; ok = 0; }
         if (!ok) break;
         *bytes += got;
     }
-    if (ok && durable) ok = FlushFileBuffers(out);
+    if (ok && durable && !FlushFileBuffers(out)) { stage = "flush"; ok = 0; }
     free(buf);
     CloseHandle(in);
     CloseHandle(out);
+    if (!ok) rt_log("fs: copy of a save file failed at \"%s\" (error %lu)", stage, GetLastError());
     return ok ? 0 : -1;
+fail:
+    rt_log("fs: copy of a save file failed at \"%s\" (error %lu)", stage, GetLastError());
+    return -1;
 }
 
 // Whether files a and b hold the same bytes; 0 when either cannot be read.
