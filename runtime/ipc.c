@@ -23,8 +23,17 @@ enum { T_CLOSE = 2, T_REQUEST = 4, T_CONTROL = 5, T_REQUEST_CTX = 6, T_CONTROL_C
        T_TIPC_BASE = 16 };
 
 // Services sm: hands out. Anything else is a named fatal.
+// nn::lm (the SDK's log service). The SDK opens it at init and sends log lines; the host keeps its own log, so every
+// command succeeds and nothing is forwarded. It is the one service whose payload the port deliberately discards.
+static void lm_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
+    (void)s;
+    (void)rq;
+    rs->result = 0;
+}
+
 static const struct { const char *name; IpcHandler handler; } services[] = {
     {"audren:u", audren_manager_handler},
+    {"lm", lm_handler},
 };
 
 static volatile long g_live;

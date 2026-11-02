@@ -15,36 +15,6 @@
 #include "platform.h"
 #include "vk.h"
 
-static uint64_t present_count;
-
-// ---- window: no surface yet; the side-test path never calls into it
-void gfx_window_start(void) {}
-void gfx_window_stop(void) {}
-void gfx_window_release_vk(void) {}
-VkNativeWindow gfx_window_handle(void) { return NULL; }
-void gfx_vsync_bind(uint64_t event) { (void)event; }
-void gfx_vsync_bind_counter(volatile long *counter) { (void)counter; }
-double gfx_window_refresh_hz(void) { return 60.0; }
-int gfx_window_focused(void) { return 1; }
-void gfx_window_resize(int w, int h) { (void)w; (void)h; }
-unsigned gfx_window_focus_messages(void) { return 0; }
-int probe_window(void) { return 0; }
-
-// ---- present: nothing to show yet
-void vk_queue_lock(void) {}
-void vk_queue_unlock(void) {}
-void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]) {
-    (void)src; (void)layout; (void)fmt; (void)w; (void)h; (void)crop;
-}
-void vk_present_flip(void) { present_count++; }
-void vk_present_capture(int on) { (void)on; }
-int vk_present_captured(const uint8_t **px, int *w, int *h, VkFormat *fmt) {
-    (void)px; (void)w; (void)h; (void)fmt;
-    return 0;
-}
-void vk_thumbs_enable(int n) { (void)n; }
-void vk_thumbs_frame(uint64_t frame) { (void)frame; }
-int vk_thumbs_read(uint64_t frame, uint8_t *rgba) { (void)frame; (void)rgba; return 0; }
 
 // ---- input: nothing read yet
 void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {

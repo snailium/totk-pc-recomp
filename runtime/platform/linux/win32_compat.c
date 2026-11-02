@@ -118,7 +118,13 @@ void *InterlockedCompareExchangePointer(void *volatile *p, void *v, void *cmp) {
 // ---- thread handles, including suspension and context transfer
 
 enum { K_THREAD = 0x54485244, K_FILE = 0x46494c45, K_FIND = 0x464e4421, K_TIMER = 0x54494d52, K_SNAP = 0x534e4150,
-       K_PROCESS = 0x50524f43, K_EVENT = 0x45564e54 };
+       K_PROCESS = 0x50524f43, K_EVENT = 0x45564e54, K_MAP = 0x4d415020 };
+
+typedef struct {
+    int kind;
+    int fd;
+    uint64_t size;
+} MapHandle;
 
 typedef struct {
     int kind;
@@ -587,10 +593,9 @@ BOOL MoveFileExW(const WCHAR *from, const WCHAR *to, DWORD flags) {
 }
 
 BOOL CreateDirectoryW(const WCHAR *path, void *sa) {
-    (void)sa;
     char p[4096];
     utf8_from_wide(path, p, sizeof p);
-    return mkdir(p, 0755) == 0;
+    return CreateDirectoryA(p, sa);
 }
 
 BOOL RemoveDirectoryW(const WCHAR *path) {
@@ -994,7 +999,12 @@ int WideCharToMultiByte(UINT cp, DWORD flags, const WCHAR *in, int in_len, char 
 // ---- modules and processes
 
 HMODULE GetModuleHandleW(const WCHAR *name) {
-    if (!name) return (HMODULE)(uintptr_t)0x400000;   // the guest modules are not mapped by the loader
+    if (!name) {
+        // The executable's own load address: the kernel uses it to tell lifted code from host code in a thread's RIP.
+        Dl_info info;
+        if (dladdr((void *)(uintptr_t)&GetModuleHandleW, &info) && info.dli_fbase) return (HMODULE)info.dli_fbase;
+        return (HMODULE)(uintptr_t)0x400000;
+    }
     return NULL;
 }
 
@@ -1152,6 +1162,12 @@ BOOL CloseHandle(HANDLE h) {
         pthread_mutex_destroy(&e->m);
         pthread_cond_destroy(&e->c);
         free(e);
+        return TRUE;
+    }
+    case K_MAP: {
+        MapHandle *m = h;
+        close(m->fd);
+        free(m);
         return TRUE;
     }
     case K_THREAD: return TRUE;   // see the note above CreateThread
@@ -1500,7 +1516,15 @@ BOOL ResetEvent(HANDLE h) {
 
 BOOL CreateDirectoryA(const char *path, void *sa) {
     (void)sa;
-    return mkdir(path, 0755) == 0 || errno == EEXIST;
+    if (mkdir(path, 0755) == 0) return TRUE;
+    // Windows reports an existing directory as a failure with ERROR_ALREADY_EXISTS, and the runtime checks that.
+    switch (errno) {
+    case EEXIST: SetLastError(ERROR_ALREADY_EXISTS); break;
+    case ENOENT: SetLastError(ERROR_PATH_NOT_FOUND); break;
+    case EACCES: SetLastError(ERROR_ACCESS_DENIED); break;
+    default: SetLastError((DWORD)errno); break;
+    }
+    return FALSE;
 }
 
 DWORD GetFullPathNameA(const char *name, DWORD cap, char *out, char **file) {
@@ -1928,4 +1952,64 @@ BOOL GetOverlappedResult(HANDLE h, OVERLAPPED *ov, DWORD *got, BOOL wait) {
     (void)wait;
     if (got) *got = 0;
     return TRUE;
+}
+
+// ---- file mappings (the RomFS image is mapped, not read)
+
+static struct { void *base; size_t size; } g_views[64];
+static pthread_mutex_t g_view_lock = PTHREAD_MUTEX_INITIALIZER;
+
+HANDLE CreateFileMappingA(HANDLE file, void *sa, DWORD protect, DWORD high, DWORD low, const char *name) {
+    (void)sa;
+    (void)protect;
+    (void)name;
+    FileHandle *f = file;
+    if (!f || f->kind != K_FILE) return NULL;
+    struct stat st;
+    if (fstat(f->fd, &st)) return NULL;
+    MapHandle *m = calloc(1, sizeof *m);
+    if (!m) return NULL;
+    m->kind = K_MAP;
+    m->fd = dup(f->fd);
+    m->size = ((uint64_t)high << 32) | low;
+    if (!m->size) m->size = (uint64_t)st.st_size;
+    return m;
+}
+
+HANDLE CreateFileMappingW(HANDLE file, void *sa, DWORD protect, DWORD high, DWORD low, const WCHAR *name) {
+    (void)name;
+    return CreateFileMappingA(file, sa, protect, high, low, NULL);
+}
+
+void *MapViewOfFile(HANDLE map, DWORD access, DWORD high, DWORD low, SIZE_T bytes) {
+    (void)access;
+    MapHandle *m = map;
+    if (!m || m->kind != K_MAP) return NULL;
+    uint64_t off = ((uint64_t)high << 32) | low;
+    size_t len = bytes ? bytes : (size_t)(m->size - off);
+    void *p = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, m->fd, (off_t)off);
+    if (p == MAP_FAILED) return NULL;
+    pthread_mutex_lock(&g_view_lock);
+    for (int i = 0; i < 64; i++) {
+        if (g_views[i].base) continue;
+        g_views[i].base = p;
+        g_views[i].size = len;
+        break;
+    }
+    pthread_mutex_unlock(&g_view_lock);
+    return p;
+}
+
+BOOL UnmapViewOfFile(const void *base) {
+    pthread_mutex_lock(&g_view_lock);
+    for (int i = 0; i < 64; i++) {
+        if (g_views[i].base != base) continue;
+        munmap(g_views[i].base, g_views[i].size);
+        g_views[i].base = NULL;
+        g_views[i].size = 0;
+        pthread_mutex_unlock(&g_view_lock);
+        return TRUE;
+    }
+    pthread_mutex_unlock(&g_view_lock);
+    return FALSE;
 }

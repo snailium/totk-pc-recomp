@@ -135,11 +135,25 @@ Acceptance for each item is a command that fails before and passes after.
 - [x] `totk --selftest` passes as a Linux ELF against the 1.2.1 modules (`build/linux-v121/totk`)
 
 ### M3 — window, input, audio, graphics
-- [ ] SDL3 window + `SDL_Vulkan_CreateSurface`; headers from `VK_KHR_xlib_surface`/`wayland_surface`
-- [ ] input: SDL events → the existing `input_map` key ids; gamepad/rumble already SDL3
+- [x] SDL3 window + `SDL_Vulkan_CreateSurface`, swapchain, blit and present (`platform/linux/gfx_window_linux.c`)
+- [ ] input: SDL events → the existing `input_map` key ids; gamepad/rumble already SDL3 (still the no-op stubs)
 - [ ] audio: SDL3 output already; `audren` host path unchanged
 - [ ] shader translator child process through `plat_child_*`; shader cache paths
-- [ ] title screen on `.101` (RADV, XTX) and on BC-250 Bazzite
+- [ ] title screen on `.101` (RADV, XTX) and on BC-250 Bazzite — blocked on a display with DRI3: `.101` has
+      no connected output and Xvfb has no DRI3, so the port boots with `
+      vk: no usable Vulkan device` and stops at graphics init
+
+### Notes from the first native boot
+
+`totk` now boots as a Linux ELF through `nn::init::Start`, `nnosInitialize`, `nninitInitializeSdkModule`, `nninitStartup`,
+`nnMain`, the account/HID setup and the RomFS mount. Two ELF-specific problems were found and fixed on the way:
+
+- **Host-function and observer tables.** `host.h` brackets the tables with markers in `.ovr$a`/`.ovr$z` and puts the
+  entries in `.ovr$m`. COFF keeps those adjacent; ELF keeps them as separate output sections in input order, so the
+  registry came out empty and no override fired (the boot sequence diverged at `nnosInitialize`). Fixed with
+  `runtime/platform/linux/sections.ld`, a linker script that coalesces `.ovr$a .ovr$m .ovr$z` and the `.obs` triple.
+- **`CreateDirectoryW` must report `ERROR_ALREADY_EXISTS`**, not succeed silently: `ov_system.c`'s profile setup
+  creates each path prefix and checks that code.
 
 ### M4 — memory semantics
 - [ ] write watch: userfaultfd path, soft-dirty fallback, trap fallback; logged at startup

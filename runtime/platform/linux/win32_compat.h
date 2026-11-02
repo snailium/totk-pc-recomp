@@ -414,6 +414,10 @@ BOOL MoveFileExW(const WCHAR *from, const WCHAR *to, DWORD flags);
 BOOL CreateHardLinkW(const WCHAR *to, const WCHAR *from, void *sa);
 BOOL CreateDirectoryW(const WCHAR *path, void *sa);
 BOOL RemoveDirectoryW(const WCHAR *path);
+HANDLE CreateFileMappingW(HANDLE file, void *sa, DWORD protect, DWORD high, DWORD low, const WCHAR *name);
+HANDLE CreateFileMappingA(HANDLE file, void *sa, DWORD protect, DWORD high, DWORD low, const char *name);
+void *MapViewOfFile(HANDLE map, DWORD access, DWORD high, DWORD low, SIZE_T bytes);
+BOOL UnmapViewOfFile(const void *base);
 BOOL RemoveDirectoryA(const char *path);
 HANDLE FindFirstFileW(const WCHAR *pattern, WIN32_FIND_DATAW *data);
 BOOL FindNextFileW(HANDLE h, WIN32_FIND_DATAW *data);
@@ -506,6 +510,9 @@ DWORD GetEnvironmentVariableA(const char *name, char *out, DWORD cap);
 #define PAGE_EXECUTE_WRITECOPY 0x80
 #define PAGE_GUARD 0x100
 #define PAGE_NOCACHE 0x200
+#define FILE_MAP_READ 0x0004
+#define FILE_MAP_WRITE 0x0002
+#define FILE_MAP_ALL_ACCESS 0xF001F
 #define WRITE_WATCH_FLAG_RESET 0x01
 #define MEM_PRIVATE 0x20000
 #define MEM_MAPPED 0x40000

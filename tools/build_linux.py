@@ -113,6 +113,7 @@ def main():
     sources.append((ROOT / 'runtime' / 'platform' / 'linux.c', RT_FLAGS))
     sources.append((ROOT / 'runtime' / 'platform' / 'linux' / 'win32_compat.c', RT_FLAGS))
     sources.append((ROOT / 'runtime' / 'platform' / 'linux' / 'gfx_linux.c', RT_FLAGS))
+    sources.append((ROOT / 'runtime' / 'platform' / 'linux' / 'gfx_window_linux.c', RT_FLAGS))
     sources.append((ROOT / 'runtime' / 'vk_vma.cpp', RT_FLAGS))   # VMA is C++: compiled with clang++ below
     sources.append((out / 'modules.c', RT_FLAGS))
     for sub in ('main', 'subsdk0', 'sdk'):
@@ -152,8 +153,9 @@ def main():
 
     objs = sorted(str(p) for p in obj.glob('*.o'))
     exe = out / 'totk'
-    cmd = [CC, '-fuse-ld=lld', '-o', str(exe), *objs, '-lSDL3', '-lvulkan', '-lopus', '-lvpx', '-lzstd',
-           '-lpthread', '-ldl', '-lm', '-lstdc++']
+    cmd = [CC, '-fuse-ld=lld', '-o', str(exe), *objs,
+           '-Wl,-T,' + str(ROOT / 'runtime' / 'platform' / 'linux' / 'sections.ld'),
+           '-lSDL3', '-lvulkan', '-lopus', '-lvpx', '-lzstd', '-lpthread', '-ldl', '-lm', '-lstdc++']
     code, log = run(cmd)
     if code:
         print(log[-6000:], file=sys.stderr)
