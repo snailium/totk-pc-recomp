@@ -55,6 +55,7 @@ The main thread joins the NVN submit thread; the submit thread never returns. Th
 | The NVN memory callback | `TOTK_NVN_MEMCB=0` | same stall |
 | Replay thread placement | `TOTK_REPLAY_ASYNC=1` | same stall |
 | Number of virtual cores | `TOTK_FREE_CORES=1` | same stall |
+| A stuck present drain in the submit path | two-second watchdog in `vk_present_drain` | it never fires: `pending`/`busy` are clear |
 
 ## The applet system event
 

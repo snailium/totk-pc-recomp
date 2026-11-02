@@ -93,7 +93,19 @@ static DWORD WINAPI present_main(void *arg) {
 void vk_present_drain(void) {
     uint64_t p0 = perf_begin();
     AcquireSRWLockExclusive(&pl);
-    while (pending || busy) SleepConditionVariableSRW(&pcv, &pl, INFINITE, 0);
+    double t0 = (double)kern_now_ns();
+    while (pending || busy) {
+        // A stuck drain is a deadlock: the present thread never clears the flag, and every later submission waits here.
+        DWORD ms = 2000;
+        SleepConditionVariableSRW(&pcv, &pl, ms, 0);
+        if ((pending || busy) && (double)kern_now_ns() - t0 > 2e9) {
+            static volatile long once;
+            if (!InterlockedExchange(&once, 1))
+                rt_log("vk: present drain stuck for two seconds: pending %d, busy %d (no present thread can clear it)",
+                       pending, busy);
+            t0 = (double)kern_now_ns();
+        }
+    }
     ReleaseSRWLockExclusive(&pl);
     perf_end(PERF_DRAIN, p0);
 }
