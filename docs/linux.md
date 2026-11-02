@@ -147,8 +147,11 @@ Acceptance for each item is a command that fails before and passes after.
 - [ ] title screen on `.101` and on BC-250 Bazzite — a guest fault remains: `f_70011266c4` is a constructor whose
       object pointer is NULL, because the lookup in `f_70007fa8f0` (`main+0x462d000+0xeb0` singleton, then a list walk)
       finds nothing. The fault address is `0x8`, i.e. `movb $0,(%rax+8)` with `rax = 0`. Reproduces with
-      `TOTK_ASYNC_PREEMPT=0`. Next step: capture `TOTK_TRACE=host` on the working Windows build under Wine and diff the
-      host-call sequence after `hid: controllers initialized` against the Linux one — blocked on a display with DRI3: `.101` has
+      `TOTK_ASYNC_PREEMPT=0` and with `TOTK_INPUT=none`. `TOTK_LOGHOSTRET=1` (hostfn.c) logs the x0 a host call
+      leaves behind; the last host returns before the fault are all void overloads (`InitializeNpad`,
+      `SetSupportedNpadIdType`, `SetSupportedNpadStyleSet`), so the NULL is not a host return value. The Windows
+      comparison is still the next step: the Wine container falls back to llvmpipe, where the boot prewarm of 27,977
+      shaders takes minutes and hides the sequence — blocked on a display with DRI3: `.101` has
       no connected output and Xvfb has no DRI3, so the port boots with `
       vk: no usable Vulkan device` and stops at graphics init
 

@@ -111,11 +111,31 @@ __attribute__((noinline, noreturn, cold)) static void bad_entry(Cpu *c) {
 
 // kern_host_track: the call counted in the thread's host depth. Not a tail call, so the host stack holds this frame
 // while fn runs; longjmp out of fn (ExitThread) leaves the depth raised on a thread that ends.
+// TOTK_LOGHOSTRET=1: log the value a host call leaves in x0. A diagnostic for a guest null pointer whose origin is a
+// host function; off by default because it writes a line per call.
+static int log_host_ret(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("TOTK_LOGHOSTRET");
+        on = v && *v == '1';
+    }
+    return on;
+}
+
 __attribute__((noinline)) static void hostfn_tracked(Cpu *c, GuestFn fn) {
     void *t = c->thread;
     int *d = kern_host_depth(t);
     __atomic_store_n(d, *d + 1, __ATOMIC_RELAXED);
+    if (__builtin_expect(log_host_ret(), 0)) {
+        uint64_t i = (c->pc - RT_HOSTFN_BASE) >> 4;
+        if ((c->pc & 15) == 0 && i < (uint64_t)nslots) {
+            fn(c);
+            rt_log("host ret %s -> %#llx", slots[i].name, (unsigned long long)c->x[0]);
+            goto out;
+        }
+    }
     fn(c);
+out:;
     int n = *d - 1;
     __atomic_store_n(d, n, __ATOMIC_RELAXED);
     if (!n && kern_preempt_pending(t)) kern_host_left(t);
