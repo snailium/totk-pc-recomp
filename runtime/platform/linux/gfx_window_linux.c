@@ -339,6 +339,11 @@ void gfx_window_start(void) {
         vkCreateSemaphore(c->device, &semi, NULL, &g_acquire[i]);
     }
     g_started = 1;
+    // The game waits on the applet system event before anything else, and on Windows the window procedure's
+    // WM_ACTIVATEAPP hands it the focus message. Without that the guest parks in WaitSystemEvent for ever and the boot
+    // freezes on the loading screen.
+    oe_set_focus(1);
+    oe_push_message(OE_MSG_FOCUS_STATE_CHANGED);
     if (!create_swapchain()) rt_fatal("gfx: swapchain creation failed");
     const SDL_DisplayMode *mode = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
     if (mode && mode->refresh_rate > 1) g_rate_hz = mode->refresh_rate;

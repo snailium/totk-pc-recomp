@@ -218,6 +218,10 @@ Acceptance for each item is a command that fails before and passes after.
       pool, a 256 MiB headroom block and `prepo: play report kept local`, which on Windows appears immediately before
       `nvnQueuePresentTexture`. The earlier negative result was a bug in the poke itself: the guest waits on the
       *readable* handle while the poke looked the handle up as a writable one, so it never signalled anything.
+- [x] the Linux window now does what the Windows window procedure does on `WM_ACTIVATEAPP`: `oe_set_focus(1)` and
+      `oe_push_message(OE_MSG_FOCUS_STATE_CHANGED)` at window start. On its own it does not unblock the boot, because
+      `oe_push_message` only appends to the runtime's applet queue; it signals no event, and the guest waits on the
+      event its own `nn::os::CreateSystemEvent` made with no timeout at all.
 - [ ] reaching a frame from there needs the peer's behaviour, not just the signal: the event is the applet/system
       message channel (the guest creates it with `nn::os::CreateSystemEvent` in inter-process mode), whose peer on a
       console writes a message into shared memory and then signals. Signalling alone advances one step and the boot
