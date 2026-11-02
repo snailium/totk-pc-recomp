@@ -464,6 +464,7 @@ void vk_exec_pass_begin(VkExec *ex) {
 }
 
 void vk_exec_pass_end(VkExec *ex) {
+    uint64_t pe0 = waitstat_now();
     if (!ex->in_pass) return;
     vk_exec_oq_pass_end(ex);
     vkCmdEndRendering(ex->cb);
@@ -474,6 +475,7 @@ void vk_exec_pass_end(VkExec *ex) {
     for (int i = 0; i < 8; i++)
         if (ex->color[i].image) vk_texture_gpu_written(ex->color[i].tex), tfr_note(&ex->color[i], stamp);
     if (ex->depth.image) vk_texture_gpu_written(ex->depth.tex), tfr_note(&ex->depth, stamp);
+    waitstat_add("replay pass end", waitstat_now() - pe0);
 }
 
 VkCommandBuffer vk_exec_inline_begin(int *reopen) {
