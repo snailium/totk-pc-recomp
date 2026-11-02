@@ -308,6 +308,20 @@ that a `RESET` query reports none.
 - [ ] Steam Machine: SteamOS, RX 9070, gamepad — same, plus overlay/menu check
 - [ ] CI: build the Linux ELF and run `--selftest` (no game files needed)
 
+## If the work stops here
+
+The branch builds, self-tests, packages and boots the game to the loading screen; the last known blocker is a deadlock
+inside the NVN replay (see *Status*). The next steps, in the order they would be tried:
+
+1. Find what should signal the key at `0x33312120`. The submitting thread waits on it without a timeout and nothing in
+   the run signals it (`TOTK_SYNC_LOG=1` never mentions it). The signal must come from guest code run by a thread that is
+   not getting to it, so the question is which guest thread ran it on the console.
+2. Reproduce with `TOTK_POKE_EVENT=0x1003` (the applet event has to be signalled to get past the earlier wait) and
+   `TOTK_NVN_MEMCB=0`, and try `TOTK_REPLAY_ASYNC=1` to move the replay off the submitting thread.
+3. Once a frame is presented, the next checks are the ones that need real hardware: `gfx: first present` in the log, a
+   screenshot from the compositor, then the title screen, on `.101` (RADV XTX) and then on the BC-250 and the Steam
+   Machine, both of which need to be online.
+
 ## Debugging notes
 
 - `TOTK_LASTCALLS=1` keeps the last 512 lifted-code calls of each thread and both crash reporters print the newest 32
