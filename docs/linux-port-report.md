@@ -56,6 +56,8 @@ The main thread joins the NVN submit thread; the submit thread never returns. Th
 | Replay thread placement | `TOTK_REPLAY_ASYNC=1` | same stall |
 | Number of virtual cores | `TOTK_FREE_CORES=1` | same stall |
 | A stuck present drain in the submit path | two-second watchdog in `vk_present_drain` | it never fires: `pending`/`busy` are clear |
+| Non-recursive Linux critical sections | native stack `vk_staging <- upload <- vk_texture_by_id_locked <- shader_for` | the actual deadlock: fixed with `PTHREAD_MUTEX_RECURSIVE` |
+| A thread-handle poll that cannot report a finished thread | prewarm of 187 shaders never returning | fixed: `WaitForSingleObject` probes once before the deadline |
 
 ## The applet system event
 
@@ -66,6 +68,25 @@ has no system, so nothing signals it, and the boot parks there.
 `TOTK_POKE_EVENT=0x1003` (a host thread signalling that handle every 5 ms) gets past it. Note that the first version of
 that diagnostic looked the handle up as a *writable* event while the guest waits on the *readable* end, which is why an
 earlier run wrongly "ruled out" this event.
+
+## The port running on the BC-250 (Bazzite)
+
+Evidence from `.144`, the machine the objective names:
+
+```
+watch: userfaultfd write watch active (WP_ASYNC, kernel dirty bits)
+vk: using gpu 0: AMD BC-250 (RADV GFX1013)
+RomFS ready: 304473 files, 1 overlays, 0 added, 0.26 s
+gfx: window 1920x1080, swapchain 1920x1006 format 44, 60 Hz, driver wayland
+gfx: first present (swapchain 1920x1006, ok)
+gfx: presents: blit ok 601, out-of-date 0, dropped 0; flips 600
+frame step: world clock starts at present 481, 86.8 s after the guest started (the player at 65.3 35.5 -192.5)
+```
+
+`TOTK_DUMP=200` from the same machine contains the rendered "The Legend of Zelda" title screen, and `TOTK_BLIT_DUMP=500`
+shows the presented image holding the loading screen, so the window shows what the game draws. Two bugs had to be fixed
+for that (both below). What it does not yet do there is reach playable speed: the load runs at 2-6 fps, five host threads
+stay at 100% CPU, and 2,000-3,300 texture re-uploads per 60 frames (about 4 GiB) dominate one sixth of the frame time.
 
 ## Where the 40-round session stopped
 
