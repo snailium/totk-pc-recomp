@@ -5,14 +5,37 @@ SteamOS (self-built Steam Machine, RX 9070). Windows stays the reference build; 
 
 ## Status
 
-- Windows is the only supported host today (`docs/building.md`). Linux and the Steam Deck are in the README's
-  *Planned* list.
-- The platform split exists but is unfinished: `runtime/platform/platform.h` declares the OS surface the runtime is
-  allowed to use, `runtime/platform/win32.c` is its only implementation, and `tools/check_platform.py` keeps an
-  allowlist of the files that still call Win32 directly. Those entries (tagged `2.7a` memory/flt/page tracking,
-  `2.7b` threads/time/locks/FP state) are the worklist.
-- `docs/architecture.md` says the Vulkan back end already "runs on Linux"; only windowing, input, the platform layer
-  and the build are Windows-bound today.
+The port lives on the `linux-native` branch and builds a native ELF without Wine or Proton.
+
+Working:
+
+- the platform layer (`runtime/platform/linux.c`), the Win32 compatibility shim the runtime's Windows-shaped code needs
+  (`runtime/platform/linux/win32_compat.{h,c}`), and a Linux build path (`tools/build_linux.py`)
+- SDL3 window and Vulkan WSI (`gfx_window_linux.c`), the shader translator built for linux-x64, and the GPU path on
+  RADV
+- the write watch through userfaultfd (WP_ASYNC + PAGEMAP_SCAN), with a soft-dirty fallback where userfaultfd is
+  unavailable
+- signal-based core preemption: priority inheritance and the preemption disable are on by default, the redirect half is
+  implemented but still corrupts guest state, so it needs `TOTK_ASYNC_PREEMPT=1`
+- `--selftest` passes; `tools/ci_linux.sh` builds and runs it; `tools/make_linux_release.py` assembles a portable
+  folder (glibc 2.38 floor, SDL3/opus/libvpx/zstd bundled) and `.github/workflows/linux.yml` runs the check
+
+Open:
+
+- the boot reaches the loading screen and freezes there: the guest renders and allocates for about two seconds, then
+  every thread sits in an SDK wait and nothing ever signals the completion it is waiting for (see *Debugging notes*).
+  No frame is ever presented (`nvnQueuePresentTexture` is never called; the Windows build calls it within seconds)
+- the validation targets have been unreachable for many rounds (`ssh bc250@192.168.111.144`,
+  `ssh deck@192.168.111.142`: `No route to host`), so end-to-end validation on Bazzite and SteamOS is still to do
+- a glibc 2.35 build container would let the release run on older images than 2.38
+
+Build and run:
+
+    tools/build_linux.py --version v121 --generated generated/v121 --exefs <dir> --romfs <dir> --jobs 16
+    ./build/linux-v121/totk --selftest
+    XDG_RUNTIME_DIR=/tmp/xdg WAYLAND_DISPLAY=wayland-0 SDL_VIDEODRIVER=wayland ./build/linux-v121/totk
+
+The game needs its own ExeFS and RomFS; nothing of the game is in the repository.
 
 ## What the Proton experiment already proved (2026-10-31, `.101`)
 
