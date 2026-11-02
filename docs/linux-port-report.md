@@ -69,6 +69,15 @@ has no system, so nothing signals it, and the boot parks there.
 that diagnostic looked the handle up as a *writable* event while the guest waits on the *readable* end, which is why an
 earlier run wrongly "ruled out" this event.
 
+## Final state of the session
+
+Verified on the last round: `tools/build_linux.py` builds 466 objects, `--selftest` passes in the build container and from
+`dist/totk-linux`, and `readelf -V` still reports `GLIBC_2.38`. On the BC-250 the default configuration runs the game at
+**12.6-12.7 fps** (1.5 fps at the start of this session), presenting through a real Wayland window, with the frame split
+between the replay recording (about 32 ms of CPU) and the GPU (about 40 ms, throttled at the submit ioctl). The Steam
+Machine (`192.168.111.142`) still answers "No route to host", so the second half of the objective's validation cannot be
+attempted.
+
 ## The port running on the BC-250 (Bazzite)
 
 Evidence from `.144`, the machine the objective names:
