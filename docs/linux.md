@@ -173,7 +173,9 @@ Acceptance for each item is a command that fails before and passes after.
       path is `build/linux-v121/pipeline-cache.bin`
 - [ ] confirm that frames reach the compositor and then the title screen, on `.101` and on BC-250 Bazzite: the port
       still stops right after the first vibration value, before the Windows build's `nvnQueuePresentTexture`, so the
-      next step is the nvn fence/present path (does `nvnQueueFenceSync` complete, and does anything call present) — the boot now loads content (`/RSDB/*.rstbl.byml.zs`,
+      the thread dump shows the main thread polling its events with timeouts and no signal ever arriving
+      (`TOTK_EVENT_LOG=1`), so the completion the boot waits for is produced by whatever is stuck between the loader
+      threads and the graphics stack — the stage library prebuild that never reports "prebuild done" is the candidate — the boot now loads content (`/RSDB/*.rstbl.byml.zs`,
       `/Pack/*.pack.zs`) and stops in the SDK's own `memcpy` (`f_70007bfa6c`/`f_70007bfa94`, deterministic, from
       `f_70007bd0b0`). The copy overruns its source: `si_addr` is `0x737265cc`, inside the heap but past the source
       object, so the length or the end pointer the caller passes is wrong. Next: read the argument setup in
@@ -235,6 +237,10 @@ page written": slower, never stale.
   for 98 calls; Windows then calls `nn::os::AllocateAddressRegion`.
 - gdb needs `--cap-add=SYS_PTRACE` to attach inside a container. The lifted code has no frame pointers, so its
   backtraces stop at the host frame; the runtime's own tracing is the useful tool there.
+- `TOTK_EVENT_LOG=1` logs every kernel event create/signal/reset/wait with the guest caller. The hang after the first
+  vibration is not a deadlock: the main thread polls `InterProcessEventImplByHorizon::Wait` (wait, reset, wait...) and
+  **no event is ever signalled** in the whole run. Nothing is waiting on a lock; the boot waits for a completion that
+  never comes, and the loader threads are idle in `ReceiveLightMessageQueue` because no work reaches them.
 - `kill -QUIT <pid>` prints every guest thread: handle, priority, core, host depth, the lifted function it is in, and
   the host call it is inside (plus the wait state when it is blocked). This is what turned "the game stops after the
   first vibration value" into "the main thread waits in `nn::os::detail::InterProcessEventImplByHorizon::Wait` on an

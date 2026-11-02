@@ -128,6 +128,17 @@ static void unlock(void) { ReleaseSRWLockExclusive(&G); }
 
 uint64_t kern_now_ns(void) { return plat_now_ns(); }
 
+// TOTK_EVENT_LOG=1: every event creation, signal, reset and wait with the guest caller. A hang on an event that is
+// never signalled is otherwise invisible: the thread dump shows the handle but not who owed it.
+static int ev_log(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("TOTK_EVENT_LOG");
+        on = v && *v == '1';
+    }
+    return on;
+}
+
 // ---- TOTK_CRIT=<first>-<last frame> with TOTK_TRACE=sched: every state change and wake of the guest threads and
 // every present over those frames, written to TOTK_CRIT_OUT (default crit.bin) at the last one, for
 // tools/crit_path.py, which walks the chain of waits back from each present (holding G). TOTK_CRIT=w<lo>-<hi> takes
@@ -1881,6 +1892,10 @@ int kern_svc(Cpu *c, uint32_t imm) {
         lock();
         uint32_t hw = h_new(O_EVENT_W, e), hr = h_new(O_EVENT_R, e);
         unlock();
+        if (ev_log()) {
+            char d[96];
+            rt_logf("event: create %#x/%#x from %s\n", hw, hr, ldr_describe(x[30], d, sizeof d));
+        }
         x[0] = R_OK;
         x[1] = hw;
         x[2] = hr;
@@ -1888,6 +1903,10 @@ int kern_svc(Cpu *c, uint32_t imm) {
     }
     case 0x11: case 0x12: case 0x17: {   // SignalEvent(writable), ClearEvent(either end), ResetSignal(readable)
         uint32_t h = (uint32_t)x[0];
+        if (ev_log() && imm == 0x17) {
+            char d[96];
+            rt_logf("event: reset %#x from %s\n", h, ldr_describe(x[30], d, sizeof d));
+        }
         uint32_t r = R_OK;
         lock();
         Event *e = imm == 0x11 ? h_peek(h, O_EVENT_W) : imm == 0x17 ? h_peek(h, O_EVENT_R)
@@ -1896,6 +1915,10 @@ int kern_svc(Cpu *c, uint32_t imm) {
             r = imm == 0x17 && h_peek(h, O_THREAD) ? R_BAD_STATE : R_BAD_HANDLE;
             if (r == R_BAD_HANDLE) rt_log("kernel: event svc %#x: invalid handle %#x", imm, h);
         } else if (imm == 0x11) {
+            if (ev_log()) {
+                char d[96];
+                rt_logf("event: signal %#x from %s\n", h, ldr_describe(x[30], d, sizeof d));
+            }
             e->signaled = 1;
             wake_sync_waiters();
         } else if (imm == 0x17 && !e->signaled) {
@@ -1948,6 +1971,13 @@ int kern_svc(Cpu *c, uint32_t imm) {
                 left = ns - (int64_t)spent;
             }
             t->wobj = n ? hs[0] | (uint64_t)n << 32 : 0;
+            if (ev_log() && n == 1 && hs[0] >= 0x1000) {
+                int idx = (int)(hs[0] - 0x1000);
+                if (idx > 0 && idx < MAX_H && (g_h[idx].type == O_EVENT_R || g_h[idx].type == O_EVENT_W)) {
+                    char d[96];
+                    rt_logf("event: wait %#x from %s\n", hs[0], ldr_describe(x[30], d, sizeof d));
+                }
+            }
             g_sync_blocks++;
             if (block(t, W_SYNC, left) == R_TIMEOUT) {
                 r = R_TIMEOUT;
@@ -2244,8 +2274,16 @@ void kern_dump_threads(const char *why) {
         dprintf(2, "  %x prio %d core %d depth %d %s%s%s%s\n", t->handle, t->prio, t->cur_core, depth,
                 c ? ldr_describe(c->pc, d, sizeof d) : "no cpu",
                 h ? " in " : "", h ? h : "", t->cur_core < 0 ? " (blocked)" : "");
-        if (t->cur_core < 0)
-            dprintf(2, "      wait st %d on %#llx waker %#x\n", t->st, (unsigned long long)t->wobj, t->waker);
+        if (t->cur_core < 0) {
+            static const char *kinds[] = {"free", "thread", "event-read", "event-write", "session", "tmem"};
+            uint64_t w = t->wobj, h = w & 0xffffffffu;
+            int idx = (int)(h - 0x1000);
+            const char *kind = "?";
+            if (h >= 0x1000 && idx > 0 && idx < MAX_H && g_h[idx].type >= 0 && g_h[idx].type < 6)
+                kind = kinds[g_h[idx].type];
+            dprintf(2, "      wait st %d on %#llx (%s %#llx, %llu handles) waker %#x\n", t->st, (unsigned long long)w,
+                    kind, (unsigned long long)h, (unsigned long long)(w >> 32), t->waker);
+        }
     }
     dprintf(2, "threads: %d total\n", n);
     __atomic_store_n(&busy, 0, __ATOMIC_RELEASE);
