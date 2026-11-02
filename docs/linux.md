@@ -258,6 +258,7 @@ that a `RESET` query reports none.
       from its own directory and after being copied elsewhere; `LD_LIBRARY_PATH=./lib ldd ./totk` resolves the bundled
       libraries.
 - [x] `tools/ci_linux.sh` builds and runs `--selftest`: the whole check needs no game files
+- [x] the folder carries `totk.desktop` (`Exec` resolves through `%k`, so the entry survives the folder being moved)
 - [ ] glibc baseline: the build host's glibc leaks into the binary, which asked for `GLIBC_2.43` (the container's math
       symbols) and would not start on a target with 2.38-2.41. `-fno-math-errno` is set for the runtime and the
       generated code so `sqrtf`/`log10f` inline instead of binding to the newest re-versioned symbols; the C23

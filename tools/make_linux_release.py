@@ -87,6 +87,16 @@ run.write_text('\n'.join([
     '']) )
 os.chmod(run, 0o755)
 
+# A desktop entry next to the launcher: %k is this file, so the entry keeps working wherever the folder is unpacked.
+(out / 'totk.desktop').write_text('''[Desktop Entry]
+Type=Application
+Name=Tears of the Kingdom (native)
+Comment=Native Linux port of the recompiled game
+Exec=sh -c 'cd "$(dirname "$1")" && exec ./run.sh' sh %k
+Terminal=false
+Categories=Game;
+''')
+
 (out / 'README.txt').write_text(f"""The Legend of Zelda: Tears of the Kingdom, native Linux port ({args.version})
 
     ./run.sh --help             options
