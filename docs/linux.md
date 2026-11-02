@@ -154,9 +154,12 @@ Acceptance for each item is a command that fails before and passes after.
       Vulkan replay and the game's first vibration value. Three portability bugs stood in the way: `GetFileAttributesW`
       failed without setting a Win32 error (so a missing directory looked like `ERROR_ALREADY_EXISTS`), paths built with
       backslashes did not resolve, and a fresh profile (no committed save) made the save working copy fail
-- [ ] **async preemption corrupts guest state**: with `TOTK_ASYNC_PREEMPT=0` the boot goes through; with it on the guest
-      dies in an SDK memcpy soon after `hid: controllers initialized`. The suspend/`SetThreadContext` path needs to be
-      made safe (likely a thread suspended inside a host call or between the Cpu fields and the host stack)
+- [ ] **async preemption: the interruption half corrupts guest state.** `TOTK_ASYNC_PREEMPT=2` (priority inheritance
+      and the preemption disable, no redirects) boots like `=0`; `=1` redirects owners into `kern_ap_stub` and the guest
+      dies soon after `hid: controllers initialized`. Two hazards are fixed (a signal frame written below the suspended
+      thread's stack pointer destroyed its red zone — handlers now run on an alternate stack, and the stub reserves the
+      red zone): the remaining one is in the redirect itself and needs the redirect log (`g_ap_log`) plus a reproduce.
+      Until then the port defaults to `=2`; `=1` turns the redirects on
 - [ ] title screen on `.101` and on BC-250 Bazzite — the boot now loads content (`/RSDB/*.rstbl.byml.zs`,
       `/Pack/*.pack.zs`) and stops in the SDK's own `memcpy` (`f_70007bfa6c`/`f_70007bfa94`, deterministic, from
       `f_70007bd0b0`). The copy overruns its source: `si_addr` is `0x737265cc`, inside the heap but past the source

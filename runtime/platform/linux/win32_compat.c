@@ -10,7 +10,8 @@
 #include "win32_compat.h"
 
 static void watch_install(void);
-__attribute__((constructor)) static void compat_early(void) { watch_install(); }
+static void altstack_install(void);
+__attribute__((constructor)) static void compat_early(void) { watch_install(); altstack_install(); }
 
 void kern_guest_crash_report(const char *why, uint64_t addr);   // kernel.c: logs the guest stack of a fatal fault
 void rt_logf(const char *fmt, ...);   // host.h: the runtime log
@@ -219,6 +220,20 @@ static void suspend_handler(int sig, siginfo_t *si, void *uc_) {
     __atomic_store_n(&h->suspended, 0, __ATOMIC_RELEASE);
 }
 
+// A signal frame is written below the interrupted stack pointer, which on SysV is the red zone: without a separate
+// stack, every SuspendThread would destroy up to 128 bytes of live data in the suspended function. Both handlers run on
+// an alternate stack, and every thread the runtime creates gets one.
+static void altstack_install(void) {
+    static const size_t SZ = 64 * 1024;
+    void *m = mmap(NULL, SZ, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+    if (m == MAP_FAILED) return;
+    stack_t ss;
+    memset(&ss, 0, sizeof ss);
+    ss.ss_sp = m;
+    ss.ss_size = SZ;
+    sigaltstack(&ss, NULL);
+}
+
 static void install_suspend_handler(void) {
     static int done;
     if (done) return;
@@ -226,7 +241,7 @@ static void install_suspend_handler(void) {
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
     sa.sa_sigaction = suspend_handler;
-    sa.sa_flags = SA_SIGINFO | SA_RESTART;
+    sa.sa_flags = SA_SIGINFO | SA_RESTART | SA_ONSTACK;
     sigemptyset(&sa.sa_mask);
     sigaction(SIGUSR2, &sa, NULL);
 }
@@ -929,7 +944,7 @@ static void watch_install(void) {
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
     sa.sa_sigaction = watch_fault;
-    sa.sa_flags = SA_SIGINFO | SA_NODEFER | SA_RESTART;
+    sa.sa_flags = SA_SIGINFO | SA_NODEFER | SA_RESTART | SA_ONSTACK;
     sigemptyset(&sa.sa_mask);
     sigaction(SIGSEGV, &sa, NULL);
 }

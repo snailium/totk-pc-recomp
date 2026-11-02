@@ -347,6 +347,13 @@ void kern_ap_stub(void);
 static void ap_init(void) {
     if (g_ap >= 0) return;
     const char *e = cfg_value("TOTK_ASYNC_PREEMPT");
+#ifndef _WIN32
+    // The interruption half is not safe on the Linux port yet: hijacking a thread's rip needs the red zone and the
+    // signal frame out of the way, both fixed, but a guest still corrupts after a redirect. Inheritance and the
+    // preemption disable are the parts that matter for forward progress, so they stay on by default and interruptions
+    // need TOTK_ASYNC_PREEMPT=1 (docs/linux.md, "async preemption").
+    if (!e || !*e) e = "2";
+#endif
     g_ap = strcmp(e, "0") != 0;
     g_ap_int = g_ap && strcmp(e, "2") != 0;
     if (g_ap) {
@@ -428,7 +435,9 @@ __asm__(".text\n"
         ".p2align 4\n"
         "kern_ap_stub:\n"
         ASM_SEH_PROC
-        "    leaq -8(%rsp), %rsp\n"   // not sub: the flags are still the interrupted code's until pushfq
+        // 136 = the SysV red zone (128 bytes below the interrupted rsp that its leaf code may hold live data in) plus
+        // the 8-byte return slot. The MS ABI has no red zone, which is why the Windows original can use -8 here.
+        "    leaq -136(%rsp), %rsp\n"   // not sub: the flags are still the interrupted code's until pushfq
         ASM_SEH_STACK
         "    pushfq\n"
         ASM_SEH_STACK
@@ -504,8 +513,8 @@ __asm__(".text\n"
         "    popq %rcx\n"
         "    popq %rax\n"
         "    popfq\n"
-        "    leaq 8(%rsp), %rsp\n"
-        "    jmpq *-8(%rsp)\n"
+        "    addq $136, %rsp\n"      // back to the interrupted rsp exactly
+        "    jmpq *-136(%rsp)\n"     // and to the return slot, next to the red zone
         ASM_SEH_END);
 
 enum { AP_NONE, AP_RETRY, AP_SENT };
