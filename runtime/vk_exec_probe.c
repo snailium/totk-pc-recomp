@@ -315,7 +315,7 @@ static int dr_root(char *root, size_t n) {
     for (char *cut = strrchr(exe, '\\'); cut; cut = strrchr(exe, '\\')) {
         *cut = 0;
         char p[MAX_PATH * 2 + 40];
-        snprintf(p, sizeof p, "%s\\build\\v121\\shaders\\jobs.json", exe);
+        snprintf(p, sizeof p, "%s/build\\v121\\shaders\\jobs.json", exe);
         if (GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES) return snprintf(root, n, "%s", exe) < (int)n;
     }
     return 0;
@@ -330,7 +330,7 @@ static prog_t *dr_prog(const char *root, const DrawEnt *e[], int n) {
     p->magic = NVN_PROG_MAGIC, p->serial = ++serial;
     for (int i = 0; i < n; i++) {
         char path[MAX_PATH * 2 + 128];
-        snprintf(path, sizeof path, "%s\\build\\v121\\shaders\\code\\%.64s.code", root, e[i]->key);
+        snprintf(path, sizeof path, "%s/build\\v121\\shaders\\code\\%.64s.code", root, e[i]->key);
         long body;
         char *raw = dr_read(path, &body);
         if (!raw) return free(p), NULL;
@@ -397,7 +397,7 @@ static uint8_t *draw_prefix(uint8_t *q, prog_t *prog, const pool_t *pool, tex_t 
 static int test_draw(const GfxBackend *b, uint8_t *guest, int *n_drawn, int *n_tries, int *n_cs) {
     char root[MAX_PATH * 2], path[MAX_PATH * 2 + 64];
     CHECK(dr_root(root, sizeof root), "build/v121/shaders/jobs.json not found");
-    snprintf(path, sizeof path, "%s\\build\\v121\\shaders\\jobs.json", root);
+    snprintf(path, sizeof path, "%s/build\\v121\\shaders\\jobs.json", root);
     long size;
     char *jobs = dr_read(path, &size);
     DrawEnt *e = malloc(sizeof *e * 20000);

@@ -547,7 +547,7 @@ static int find_ini(void) {
     if (ini_path[0]) return 1;
     char path[1024];
     if (!plat_exe_path(path, sizeof path)) return 0;
-    char *cut = strrchr(path, '\\');
+    char *cut = path_last_sep(path);
     if (!cut) cut = strrchr(path, '/');
     if (!cut || cut + 10 >= path + sizeof path) return 0;
     strcpy(cut + 1, "totk.ini");

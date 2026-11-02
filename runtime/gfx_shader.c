@@ -154,11 +154,6 @@ static void json_esc(char **o, const char *s) {
 #define XLATE_FILE "totk_xlate"
 #endif
 
-static char *path_last_sep(char *p) {
-    char *a = strrchr(p, '/'), *b = strrchr(p, '\\');
-    return a > b ? a : b;
-}
-
 static int hex32(const char *h, uint8_t out[32]) {        // 64 hex digits, then nothing but white space
     for (int i = 0; i < 64; i++) {
         char c = h[i] >= 'A' && h[i] <= 'F' ? (char)(h[i] | 32) : h[i];
@@ -487,7 +482,7 @@ static GfxShader *disk_load(const uint8_t key[32], const uint8_t *iid) {
     char hex[65], p[PATH_CAP + 80];
     key_hex(key, hex);
     uint64_t spv_size = 0, res_size = 0;
-    snprintf(p, PATH_CAP + 80, "%s\\%s.res.json", cache_dir, hex);
+    snprintf(p, PATH_CAP + 80, "%s/%s.res.json", cache_dir, hex);
     uint8_t *res = read_file(p, &res_size);
     if (!res) return NULL;
     if (!reflection_valid((const char *)res, res_size)) {
@@ -496,7 +491,7 @@ static GfxShader *disk_load(const uint8_t key[32], const uint8_t *iid) {
         free(res);
         return NULL;
     }
-    snprintf(p, PATH_CAP + 80, "%s\\%s.spv", cache_dir, hex);
+    snprintf(p, PATH_CAP + 80, "%s/%s.spv", cache_dir, hex);
     uint8_t *spv = read_file(p, &spv_size);
     uint32_t magic = 0;
     if (spv && spv_size >= 20) memcpy(&magic, spv, 4);
@@ -725,7 +720,7 @@ static void use_name(const uint8_t h[32], uint8_t name[32]) {
 static void use_path_of(const uint8_t name[32], char *p) {
     char hex[65];
     key_hex(name, hex);
-    snprintf(p, PATH_CAP + 80, "%s\\%s.use", cache_dir, hex);
+    snprintf(p, PATH_CAP + 80, "%s/%s.use", cache_dir, hex);
 }
 
 static void use_path(const uint8_t h[32], char *p) {
@@ -763,7 +758,7 @@ static DWORD WINAPI use_preload(void *arg) {
     (void)arg;
     uint64_t t0 = plat_now_ns();
     char pattern[PATH_CAP + 16], p[PATH_CAP + 80];
-    snprintf(pattern, sizeof pattern, "%s\\*.use", cache_dir);
+    snprintf(pattern, sizeof pattern, "%s/*.use", cache_dir);
     WIN32_FIND_DATAA fd;
     HANDLE f = FindFirstFileExA(pattern, FindExInfoBasic, &fd, FindExSearchNameMatch, NULL, FIND_FIRST_EX_LARGE_FETCH);
     int n = 0, bad = 0;
@@ -778,7 +773,7 @@ static DWORD WINAPI use_preload(void *arg) {
             uint64_t len = 0;
             uint32_t *u = NULL;
             if (ok) {
-                snprintf(p, sizeof p, "%s\\%s", cache_dir, fd.cFileName);
+                snprintf(p, sizeof p, "%s/%s", cache_dir, fd.cFileName);
                 u = (uint32_t *)read_file(p, &len);
                 ok = u && len == 20 && u[0] == USE_MAGIC && u[1] == USE_VERSION;
             }
@@ -1109,7 +1104,7 @@ typedef struct {
 static void in_path(const uint8_t iid[32], char *p) {
     char hex[65];
     key_hex(iid, hex);
-    snprintf(p, PATH_CAP + 80, "%s\\in\\%s.in", cache_dir, hex);
+    snprintf(p, PATH_CAP + 80, "%s/in\\%s.in", cache_dir, hex);
 }
 
 // Stores the inputs of a translation unless they are stored already; the file appears whole (written, then renamed).
@@ -1128,7 +1123,7 @@ static void in_store(const uint8_t iid[32], int stage, const uint8_t *control, c
     memcpy(o, control, CONTROL_SIZE), o += CONTROL_SIZE;
     memcpy(o, code, r->length), o += r->length;
     if (r->c1_len) memcpy(o, r->c1, r->c1_len);
-    snprintf(tmp, PATH_CAP + 120, "%s\\in", cache_dir);
+    snprintf(tmp, PATH_CAP + 120, "%s/in", cache_dir);
     mkdir_p(tmp);
     plat_file_write_atomic(p, buf, n);
     free(buf);
@@ -1173,9 +1168,9 @@ static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *co
     char hex[65], code_path[PATH_CAP + 80], spv_path[PATH_CAP + 80], res_path[PATH_CAP + 80];
     key_hex(key, hex);
     mkdir_p(cache_dir);
-    snprintf(code_path, PATH_CAP + 80, "%s\\%s.code", cache_dir, hex);
-    snprintf(spv_path, PATH_CAP + 80, "%s\\%s.spv", cache_dir, hex);
-    snprintf(res_path, PATH_CAP + 80, "%s\\%s.res.json", cache_dir, hex);
+    snprintf(code_path, PATH_CAP + 80, "%s/%s.code", cache_dir, hex);
+    snprintf(spv_path, PATH_CAP + 80, "%s/%s.spv", cache_dir, hex);
+    snprintf(res_path, PATH_CAP + 80, "%s/%s.res.json", cache_dir, hex);
     if (!write_file(code_path, code + skip, (size_t)(r->length - skip))) return fail("cannot write the code file", hex);
     size_t cap = 2 * PATH_CAP * 6 + 2 * r->c1_len + 8192;
     char *req = malloc(cap), reply[LINE_MAX_LEN];
@@ -1196,9 +1191,9 @@ static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *co
         build_key(r->code_hash, a, &m, mk, miid);
         char mhex[65], to[PATH_CAP + 80];
         key_hex(mk, mhex);
-        snprintf(to, PATH_CAP + 80, "%s\\%s.spv", cache_dir, mhex);
+        snprintf(to, PATH_CAP + 80, "%s/%s.spv", cache_dir, mhex);
         int moved = plat_file_replace(spv_path, to);
-        snprintf(to, PATH_CAP + 80, "%s\\%s.res.json", cache_dir, mhex);
+        snprintf(to, PATH_CAP + 80, "%s/%s.res.json", cache_dir, mhex);
         moved = moved && plat_file_replace(res_path, to);
         if (moved) {
             use_store(r->code_hash, &m);
@@ -1436,7 +1431,7 @@ static DWORD WINAPI warm_worker(void *arg) {
             char hex[65], p[PATH_CAP + 80];
             key_of_input(iid, key);
             key_hex(key, hex);
-            snprintf(p, PATH_CAP + 80, "%s\\%s.spv", cache_dir, hex);
+            snprintf(p, PATH_CAP + 80, "%s/%s.spv", cache_dir, hex);
             if (file_exists(p)) InterlockedIncrement(&w->other_cached);
             else gfx_shader_load_input(iid, 1);
         }
@@ -1473,7 +1468,7 @@ static int in_collect(const char *file, void *ctx) {
 // The stored inputs not in named (sorted): ids parsed from the in/ file names.
 static size_t other_inputs(const uint8_t (*named)[32], size_t n_named, uint8_t (**out)[32]) {
     char dir[PATH_CAP + 80];
-    snprintf(dir, sizeof dir, "%s\\in", cache_dir);
+    snprintf(dir, sizeof dir, "%s/in", cache_dir);
     InList l = {.named = named, .n_named = n_named};
     plat_file_list(dir, ".in", in_collect, &l);
     return *out = l.v, l.n;
@@ -1864,9 +1859,9 @@ void gfx_shader_prepare_recorded(int threads, int procs) {
 
 int gfx_shader_prepare_seed(const char *dir, int threads, int procs) {
     char ans[PATH_CAP + 32], prg[PATH_CAP + 32], out[PATH_CAP + 32];
-    snprintf(ans, sizeof ans, "%s\\seed-answers.bin", dir);
-    snprintf(prg, sizeof prg, "%s\\seed-programs.bin", dir);
-    snprintf(out, sizeof out, "%s\\shader-prepared.bin", dir);
+    snprintf(ans, sizeof ans, "%s/seed-answers.bin", dir);
+    snprintf(prg, sizeof prg, "%s/seed-programs.bin", dir);
+    snprintf(out, sizeof out, "%s/shader-prepared.bin", dir);
     double t0 = (double)GetTickCount64();
     uint64_t fail0 = (uint64_t)n_failures;
     uint8_t *ab = NULL, (*iid)[32] = NULL;

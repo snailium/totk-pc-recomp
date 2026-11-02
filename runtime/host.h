@@ -12,6 +12,16 @@
 #include <stdint.h>
 #include <string.h>
 
+// The last path separator, either flavour. The runtime was written for Windows and builds some paths with backslashes;
+// off Windows the wide-to-UTF-8 conversion in the platform layer turns them into slashes, but code that splits a path
+// itself has to accept both.
+static inline char *path_last_sep(char *p) {
+    char *a = strrchr(p, '/'), *b = strrchr(p, '\\');
+    if (!a) return b;
+    if (!b) return a;
+    return a > b ? a : b;
+}
+
 #include "cpu.h"
 #include "dispatch.h"
 

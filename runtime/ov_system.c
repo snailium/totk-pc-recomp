@@ -715,10 +715,10 @@ const char *ov_shared_font_dir(char *buf, size_t n) {
     else {
         char exe[MAX_PATH], probe[MAX_PATH + 40];   // shared-fonts next to totk.exe (tools/package_build.py), else the repo's
         DWORD len = GetModuleFileNameA(NULL, exe, sizeof exe);
-        char *cut = len && len < sizeof exe ? strrchr(exe, '\\') : NULL;
+        char *cut = len && len < sizeof exe ? path_last_sep(exe) : NULL;
         if (cut) *cut = 0;
-        snprintf(probe, sizeof probe, "%s\\shared-fonts\\0-standard.bfttf", exe);
-        if (cut && GetFileAttributesA(probe) != INVALID_FILE_ATTRIBUTES) snprintf(buf, n, "%s\\shared-fonts", exe);
+        snprintf(probe, sizeof probe, "%s/shared-fonts\\0-standard.bfttf", exe);
+        if (cut && GetFileAttributesA(probe) != INVALID_FILE_ATTRIBUTES) snprintf(buf, n, "%s/shared-fonts", exe);
         else snprintf(buf, n, "%s/../../firmware/shared-fonts", rt_config()->romfs);
     }
     return buf;

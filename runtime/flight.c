@@ -254,14 +254,14 @@ static DWORD WINAPI dump_main(void *arg) {
             for (int i = pass ? (j->n > 8 ? j->n - 8 : 0) : 0; i < j->n; i++) {
                 if (have[i] || !vk_thumbs_read(j->r[i].frame, px)) continue;
                 char path[MAX_PATH + 32];
-                snprintf(path, sizeof path, "%s\\f%06llu.png", j->dir, (unsigned long long)j->r[i].frame);
+                snprintf(path, sizeof path, "%s/f%06llu.png", j->dir, (unsigned long long)j->r[i].frame);
                 if (write_png(path, px, &pb)) have[i] = 1, n_thumbs++;
             }
         }
         free(px), free(pb.raw), free(pb.z), free(pb.head);
     }
     char path[MAX_PATH + 32];
-    snprintf(path, sizeof path, "%s\\frames.tsv", j->dir);
+    snprintf(path, sizeof path, "%s/frames.tsv", j->dir);
     FILE *f = fopen(path, "w");
     if (!f) {
         rt_log("flight: cannot write %s", path);
@@ -303,7 +303,7 @@ static void start_dump(void) {
     for (int i = 0; i < n; i++) j->r[i] = ring[(recorded - (uint64_t)n + (uint64_t)i) % (uint64_t)ring_n];
     SYSTEMTIME st;
     GetLocalTime(&st);
-    snprintf(j->dir, sizeof j->dir, "%s\\%04u%02u%02u-%02u%02u%02u-f%llu", base_dir, st.wYear, st.wMonth, st.wDay, st.wHour,
+    snprintf(j->dir, sizeof j->dir, "%s/%04u%02u%02u-%02u%02u%02u-f%llu", base_dir, st.wYear, st.wMonth, st.wDay, st.wHour,
              st.wMinute, st.wSecond, (unsigned long long)trig_frame);
     HANDLE h = CreateThread(NULL, 0, dump_main, j, 0, NULL);
     if (h) CloseHandle(h);

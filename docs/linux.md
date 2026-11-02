@@ -167,7 +167,13 @@ Acceptance for each item is a command that fails before and passes after.
       cheapest way to tell "drawing" from "presenting": the port issues thousands of first-time nvn calls but never
       reaches `nvnQueuePresentTexture`, and `--prepare-shaders` populates the shader cache so the pipeline library
       prebuild that gated the Windows build is not paid on every run
-- [ ] confirm that frames reach the compositor and then the title screen, on `.101` and on BC-250 Bazzite — the boot now loads content (`/RSDB/*.rstbl.byml.zs`,
+- [x] paths: the runtime built some of them with Windows separators and split them with `strrchr(..., '\\')`, so the
+      pipeline cache path came out empty ("cache <memory only>") and `--prepare-shaders` returned before doing anything.
+      Joins now use `/` (accepted by Windows too) and splits go through `path_last_sep` (host.h); the pipeline cache
+      path is `build/linux-v121/pipeline-cache.bin`
+- [ ] confirm that frames reach the compositor and then the title screen, on `.101` and on BC-250 Bazzite: the port
+      still stops right after the first vibration value, before the Windows build's `nvnQueuePresentTexture`, so the
+      next step is the nvn fence/present path (does `nvnQueueFenceSync` complete, and does anything call present) — the boot now loads content (`/RSDB/*.rstbl.byml.zs`,
       `/Pack/*.pack.zs`) and stops in the SDK's own `memcpy` (`f_70007bfa6c`/`f_70007bfa94`, deterministic, from
       `f_70007bd0b0`). The copy overruns its source: `si_addr` is `0x737265cc`, inside the heap but past the source
       object, so the length or the end pointer the caller passes is wrong. Next: read the argument setup in

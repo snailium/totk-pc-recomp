@@ -159,10 +159,10 @@ static void cache_path_init(void) {
     char exe[MAX_PATH * 2];
     DWORD n = GetModuleFileNameA(NULL, exe, sizeof exe);
     if (!n || n >= sizeof exe) return;
-    char *cut = strrchr(exe, '\\');
+    char *cut = path_last_sep(exe);
     if (!cut) return;
     *cut = 0;
-    snprintf(P.cache_path, sizeof P.cache_path, "%s\\pipeline-cache.bin", exe);
+    snprintf(P.cache_path, sizeof P.cache_path, "%s/pipeline-cache.bin", exe);
 }
 
 // Cache data whose header names another device or driver is dropped before Vulkan sees it.
@@ -2880,7 +2880,7 @@ static DWORD WINAPI lb_warm_worker(void *arg) {
 // Preparation: every variant of <dir>/shader-prepared.bin on every core at normal priority.
 static void lb_warm_prepared(const char *dir) {
     char path[MAX_PATH * 2 + 32];
-    snprintf(path, sizeof path, "%s\\shader-prepared.bin", dir);
+    snprintf(path, sizeof path, "%s/shader-prepared.bin", dir);
     uint64_t size = 0;
     uint8_t *f = plat_file_read(path, &size);
     size_t n = f && size >= 16 ? (size_t)(size - 16) / 36 : 0;
@@ -2915,7 +2915,7 @@ int vk_pipeline_prepare_shaders(void) {
     }
     char dir[MAX_PATH * 2];
     snprintf(dir, sizeof dir, "%s", P.cache_path);
-    char *cut = strrchr(dir, '\\');
+    char *cut = path_last_sep(dir);
     if (!cut) return 1;
     *cut = 0;
     int cpus = (int)GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
@@ -2937,11 +2937,11 @@ int vk_pipeline_warm_shaders(void) {
     }
     char dir[MAX_PATH * 2];
     snprintf(dir, sizeof dir, "%s", P.cache_path);
-    char *cut = strrchr(dir, '\\');
+    char *cut = path_last_sep(dir);
     if (!cut) return 1;
     *cut = 0;
     char prp[MAX_PATH * 2 + 32];
-    snprintf(prp, sizeof prp, "%s\\shader-prepared.bin", dir);
+    snprintf(prp, sizeof prp, "%s/shader-prepared.bin", dir);
     if (GetFileAttributesA(prp) == INVALID_FILE_ATTRIBUTES) {
         fprintf(stderr, "warm-shaders: no %s (tools/prepare_shaders.py writes it)\n", prp);
         return 1;
@@ -3159,7 +3159,7 @@ static int census_cmp(const void *x, const void *y) {
 
 static char *census_read(const char *root, size_t *size) {
     char path[MAX_PATH * 2 + 64];
-    snprintf(path, sizeof path, "%s\\build\\v121\\shaders\\jobs.json", root);
+    snprintf(path, sizeof path, "%s/build\\v121\\shaders\\jobs.json", root);
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
     fseek(f, 0, SEEK_END);
@@ -3206,7 +3206,7 @@ static const GfxShader *census_shader(const char *root, const CensusEntry *e) {
     uint8_t control[0x880] = {0};
     if (e->c1_len > sizeof c1) return NULL;
     for (size_t b = 0; b < e->c1_len; b++) c1[b] = (uint8_t)(hexv(e->c1[b * 2]) << 4 | hexv(e->c1[b * 2 + 1]));
-    snprintf(path, sizeof path, "%s\\build\\v121\\shaders\\code\\%.64s.code", root, e->key);
+    snprintf(path, sizeof path, "%s/build\\v121\\shaders\\code\\%.64s.code", root, e->key);
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
     fseek(f, 0, SEEK_END);
@@ -3230,10 +3230,10 @@ static int census_root(char *root, size_t n) {
     char exe[MAX_PATH * 2];
     DWORD len = GetModuleFileNameA(NULL, exe, sizeof exe);
     if (!len || len >= sizeof exe) return 0;
-    for (char *cut = strrchr(exe, '\\'); cut; cut = strrchr(exe, '\\')) {
+    for (char *cut = path_last_sep(exe); cut; cut = path_last_sep(exe)) {
         *cut = 0;
         char p[MAX_PATH * 2 + 40];
-        snprintf(p, sizeof p, "%s\\build\\v121\\shaders\\jobs.json", exe);
+        snprintf(p, sizeof p, "%s/build\\v121\\shaders\\jobs.json", exe);
         if (GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES) return snprintf(root, n, "%s", exe) < (int)n;
     }
     return 0;

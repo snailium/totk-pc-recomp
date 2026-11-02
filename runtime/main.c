@@ -102,7 +102,7 @@ static void log_open(int game) {
     char dir[MAX_PATH * 3], from[MAX_PATH * 3 + 16], to[MAX_PATH * 3 + 16];
     char *cut = NULL;
     if (game && !plat_stderr_path(dir, sizeof dir) && plat_exe_path(dir, sizeof dir)) {
-        cut = strrchr(dir, '\\');
+        cut = path_last_sep(dir);
         char *f = strrchr(dir, '/');
         if (f > cut) cut = f;
     }
@@ -110,12 +110,12 @@ static void log_open(int game) {
         strcpy(cut, "\\logs");
         plat_file_mkdir_p(dir);
         for (int i = LOG_KEEP - 1; i > 0; i--) {   // totk.3.log -> totk.4.log, ..., totk.log -> totk.1.log
-            if (i > 1) snprintf(from, sizeof from, "%s\\totk.%d.log", dir, i - 1);
-            else snprintf(from, sizeof from, "%s\\totk.log", dir);
-            snprintf(to, sizeof to, "%s\\totk.%d.log", dir, i);
+            if (i > 1) snprintf(from, sizeof from, "%s/totk.%d.log", dir, i - 1);
+            else snprintf(from, sizeof from, "%s/totk.log", dir);
+            snprintf(to, sizeof to, "%s/totk.%d.log", dir, i);
             if (plat_file_exists(from)) plat_file_replace(from, to);
         }
-        snprintf(g_log_path, sizeof g_log_path, "%s\\totk.log", dir);
+        snprintf(g_log_path, sizeof g_log_path, "%s/totk.log", dir);
         g_log_file = plat_append_open(g_log_path);
     }
     if (!g_log_file) {
@@ -534,19 +534,19 @@ static const char *portable_path(const char *dir, const char *var, const char *s
     if (e && *e) {
         int abs_path = e[0] == '\\' || e[0] == '/' || e[1] == ':';
         if (abs_path) snprintf(out, cap, "%s", e);
-        else snprintf(out, cap, "%s\\%s", dir, e);
+        else snprintf(out, cap, "%s/%s", dir, e);
         return out;
     }
     char probe[MAX_PATH * 3];
-    snprintf(out, cap, "%s\\%s", dir, sub);
-    snprintf(probe, sizeof probe, "%s\\%s", out, must);
+    snprintf(out, cap, "%s/%s", dir, sub);
+    snprintf(probe, sizeof probe, "%s/%s", out, must);
     return GetFileAttributesA(probe) != INVALID_FILE_ATTRIBUTES ? out : fallback;
 }
 
 static void portable_paths(RtConfig *c) {
     char exe[MAX_PATH * 2];
     DWORD n = GetModuleFileNameA(NULL, exe, sizeof exe);
-    char *cut = n && n < sizeof exe ? strrchr(exe, '\\') : NULL;
+    char *cut = n && n < sizeof exe ? path_last_sep(exe) : NULL;
     if (!cut) return;
     *cut = 0;
     c->exefs = portable_path(exe, "TOTK_EXEFS", "exefs", "main.npdm", pp_exefs, sizeof pp_exefs, c->exefs);
