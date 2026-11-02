@@ -267,6 +267,9 @@ Acceptance for each item is a command that fails before and passes after.
 - [x] the BC-250 validation reached the title screen: the run presents the Zelda title art and menu (Continue, New Game,
       Options, amiibo) through a real Wayland window at 12.5-12.6 fps, with the art animating between captures. The
       captures stay outside the repository, like the game data.
+- [x] the knobs that do not move the frame: `TOTK_ASYNC_PREEMPT=0` (12.1 fps against 12.6), `TOTK_SPLIT_DRAWS=0` and
+      `TOTK_REPLAY_ASYNC=1` (12.6) all leave it where it is, so the frame is the replay recording plus the GPU, not
+      scheduling, command buffer splitting or the thread the replay runs on.
 - [x] what a gameplay frame costs on the BC-250, from `TOTK_TRACE=gfx`: about **130 render passes and 280-330 draws**,
       55 clears and 19 dispatches in one submission, with seven 1080p targets, several 1600x900 ones and a long tail of
       small ones. The Switch is tile-based and a pass change is nearly free there; on a desktop GPU each of the 130
