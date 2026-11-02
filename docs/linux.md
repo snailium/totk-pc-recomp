@@ -259,10 +259,11 @@ that a `RESET` query reports none.
       libraries.
 - [x] `tools/ci_linux.sh` builds and runs `--selftest`: the whole check needs no game files
 - [x] the folder carries `totk.desktop` (`Exec` resolves through `%k`, so the entry survives the folder being moved)
-- [ ] glibc baseline: the build host's glibc leaks into the binary, which asked for `GLIBC_2.43` (the container's math
-      symbols) and would not start on a target with 2.38-2.41. `-fno-math-errno` is set for the runtime and the
-      generated code so `sqrtf`/`log10f` inline instead of binding to the newest re-versioned symbols; the C23
-      `__isoc23_*` imports still ask for 2.38.
+- [x] glibc baseline: the build host's glibc leaked into the binary (`GLIBC_2.43` for the math symbols), which no
+      target image carries. `-fno-math-errno` took care of `sqrtf`; `log10f` has no instruction form and stayed a libm
+      call, so the port now defines `log10f` itself over the double `log10`. The requirement is `GLIBC_2.38` (the C23
+      `strtol` family), which Bazzite (2.39-2.41) and SteamOS (2.38+) have. A 2.35 build container would still be the
+      cleaner answer and is left in the list below.
 - [ ] BC-250: Bazzite, RADV gfx1013, 16 GB APU — boots to field, log shows the write-watch mode and the GPU
 - [ ] Steam Machine: SteamOS, RX 9070, gamepad — same, plus overlay/menu check
 - [ ] CI: build the Linux ELF and run `--selftest` (no game files needed)

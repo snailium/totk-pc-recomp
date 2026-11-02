@@ -38,6 +38,7 @@ void rt_logf(const char *fmt, ...);   // host.h: the runtime log
 #include <dirent.h>
 #include <dlfcn.h>
 #include <sched.h>
+#include <math.h>
 #include <stdarg.h>
 #include <sys/ioctl.h>
 
@@ -999,6 +1000,14 @@ static void watch_after_commit(void *addr, size_t n) {
     if (!watch_for((uintptr_t)addr)) return;
     mprotect(addr, n, PROT_READ);
 }
+
+// ---- a portable log10f
+//
+// Building on a glibc newer than the target ties the executable to that glibc: the newest images export log10f at a
+// re-versioned symbol (GLIBC_2.43), which a Bazzite (2.39-2.41) or SteamOS (2.38) machine does not have. Defining it
+// here keeps the import at the oldest version the double log10f carries. One correctly rounded-ish step through
+// double precision is far more than the game needs from a log10f call in geometry and animation code.
+float log10f(float x) { return (float)log10((double)x); }
 
 // ---- write watch through soft dirty bits (fallback when userfaultfd is not available)
 //
