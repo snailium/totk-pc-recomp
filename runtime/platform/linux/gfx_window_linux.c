@@ -212,7 +212,9 @@ void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int
     if (!g_started) gfx_window_start();
     VkCtx *c = vk_ctx();
     if (!g_started) return;
+    uint64_t wp_0 = waitstat_now();
     gfx_pump_events();
+    waitstat_add("present pump", waitstat_now() - wp_0);
     uint64_t wl0 = waitstat_now();
     plat_mutex_lock(&g_pl);
     waitstat_add("present lock", waitstat_now() - wl0);
@@ -344,6 +346,7 @@ skip_dump:
                            .pCommandBuffers = &g_cb[g_frame],
                            .signalSemaphoreCount = 1,
                            .pSignalSemaphores = &g_render_done[idx]};
+    uint64_t wb0 = waitstat_now();
     vk_queue_lock();
     if (vkQueueSubmit(c->gfx_queue, 1, &submit, g_fence[g_frame]) != VK_SUCCESS) {
         vk_queue_unlock();
@@ -351,6 +354,7 @@ skip_dump:
         return;
     }
     vk_queue_unlock();
+    waitstat_add("blit submit", waitstat_now() - wb0);
     g_flip_on = 1;
     g_flip_idx = idx;
     n_blit_ok++;

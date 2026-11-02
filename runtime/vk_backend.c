@@ -62,11 +62,15 @@ static DWORD WINAPI present_main(void *arg) {
         WakeAllConditionVariable(&pcv);
         ReleaseSRWLockExclusive(&pl);
         if (flight_on) vk_thumbs_frame(j.frame);
+        uint64_t jb0 = waitstat_now();
+        uint64_t bt0 = waitstat_now();
         vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
+        waitstat_add("blit total", waitstat_now() - bt0);
         uint64_t f = vk_sync_submit(NULL, 0);   // a timeline value after the blit: deferred destruction waits for the blit too
         if (j.value && f != j.value)
             rt_fatal("vk: the present of frame %llu signalled %llu, queued as %llu", (unsigned long long)j.frame,
                      (unsigned long long)f, (unsigned long long)j.value);
+        waitstat_add("present job", waitstat_now() - jb0);
         AcquireSRWLockExclusive(&pl);
         busy = 0;
         WakeAllConditionVariable(&pcv);
@@ -147,7 +151,9 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
         CloseHandle(h);
         present_thread = 1;
     }
+    uint64_t we0 = waitstat_now();
     while (pending) SleepConditionVariableSRW(&pcv, &pl, INFINITE, 0);   // one present in waiting at most
+    waitstat_add("present enqueue wait", waitstat_now() - we0);
     job = j;
     pending = 1;
     WakeAllConditionVariable(&pcv);

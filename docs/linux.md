@@ -246,6 +246,9 @@ Acceptance for each item is a command that fails before and passes after.
       GTK's icon loader (`gtkiconhelper.c: ensure_surface_for_gicon`, the `image-missing.svg` loader under `bwrap`), which
       `libdecor`'s GTK plugin pulls in when SDL creates the Wayland window. On Bazzite the same binary creates its window
       and presents. Either drop libdecor from that container or run the XTX comparison outside it.
+- [x] the BC-250 environment, checked: `lscpu` reports 8 cores and 16 threads (the CPU unlock is applied), and the
+      kernel's `amdgpu` line reports `SE 2, SH per SE 2, CU per SH 10, active_cu_number 24`: 24 compute units, not the 40
+      the unlocked board is expected to have. The GPU unlock is not in effect on this machine.
 - [x] the frame budget on the BC-250 is the GPU, not the CPU: the submitting thread blocks in `ioctl(ac_drm_cs_submit_raw2)`
       (the kernel waiting for room in the command ring) during the load, with the ASTC compute decoder and the replay
       queue ahead of it. That is a property of the hardware and of how much work the port asks of it, not of the write

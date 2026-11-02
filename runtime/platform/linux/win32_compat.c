@@ -859,8 +859,16 @@ static void *uffd_thread(void *arg) {
 // so it runs once per submission (mem_write_watch_epoch), not once per query.
 static int g_clear_refs = -1;
 
+// Off by default: clear_refs walks the whole address space, and on the BC-250 it took 483 ms per submission (two a
+// frame, so nearly a second of CPU per frame) while the textures it was meant to settle are handled by TOTK_WATCH=self.
+// TOTK_WATCH_EPOCH=1 turns it back on for measurement.
 void mem_write_watch_epoch(void) {
-    if (!g_uffd_watch || g_clear_refs < 0) return;
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *v = getenv("TOTK_WATCH_EPOCH");
+        enabled = v && *v == '1';
+    }
+    if (!enabled || !g_uffd_watch || g_clear_refs < 0) return;
     if (pwrite(g_clear_refs, "4", 1, 0) != 1) g_clear_refs = -1;
 }
 

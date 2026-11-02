@@ -340,7 +340,9 @@ static int sublog(void) {
 uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     vk_sync_start();
     VkCtx *c = vk_ctx();
+    uint64_t sl0 = waitstat_now();
     AcquireSRWLockExclusive(&sub_lock);
+    waitstat_add("submit lock", waitstat_now() - sl0);
     vk_mem_dirty_submit();   // TOTK_TRACE=perf: what a mirror would upload before this submit
     uint64_t fence = __atomic_load_n(&issued, __ATOMIC_ACQUIRE) + 1;
     cur_fence = fence;
@@ -362,7 +364,9 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     perf_replay(t0);
     // After the recording: the uploads it asked for (and every earlier one) precede it in queue order.
     if (sublog()) rt_log("vk: submit %llu: recorded", (unsigned long long)fence);
+    uint64_t uf0 = waitstat_now();
     vk_upload_flush(0);
+    waitstat_add("upload flush", waitstat_now() - uf0);
     if (sublog()) rt_log("vk: submit %llu: uploads flushed", (unsigned long long)fence);
     VkCommandBuffer pro = prologue(c, fence);
     s = &slots[cur_slot];
@@ -393,7 +397,9 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     if (++subs % 4096 == 0) rec_stats_log();
     ReleaseSRWLockExclusive(&sub_lock);
     // Once per submission: the write watch's dirty bits (see mem_write_watch_epoch).
+    uint64_t we0 = waitstat_now();
     mem_write_watch_epoch();
+    waitstat_add("write watch epoch", waitstat_now() - we0);
     if (sublog()) rt_log("vk: submit %llu: done", (unsigned long long)fence);
     return fence;
 }
