@@ -288,6 +288,7 @@ static uint32_t block_inner(RtThread *t, int kind, int64_t ns) {
         return R_TIMEOUT;
     }
     uint64_t now = kern_now_ns();
+    uint64_t blk_t0 = now;
     int forever = ns < 0 || (uint64_t)ns > UINT64_MAX - now;
     uint64_t deadline = forever ? 0 : now + (uint64_t)ns;
     while (!t->woke) {
@@ -299,11 +300,20 @@ static uint32_t block_inner(RtThread *t, int kind, int64_t ns) {
         if (now >= deadline) {
             wait_unlink(t);
             t->wkind = W_NONE;
+            waitstat_add("guest wait (timeout)", kern_now_ns() - blk_t0);
             return R_TIMEOUT;
         }
         uint64_t ms = (deadline - now + 999999) / 1000000;
         SleepConditionVariableSRW(&t->cv, &G, ms > 0xFFFFFFF0u ? 0xFFFFFFF0u : (DWORD)ms, 0);
     }
+    // Who waits and for how long: a guest thread parked in a wait is the commonest reason a frame is late, and the
+    // thread dump shows one instant only.
+    waitstat_add(kind == W_SYNC ? "guest sync wait"
+                 : kind == W_CONDVAR ? "guest condvar"
+                 : kind == W_LOCK ? "guest lock"
+                 : kind == W_ADDRESS ? "guest address"
+                                     : "guest wait",
+                 kern_now_ns() - blk_t0);
     if (t->wake_at) {
         uint64_t d = kern_now_ns() - t->wake_at;
         t->lw_ns += d;

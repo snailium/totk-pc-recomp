@@ -150,6 +150,11 @@ uint64_t mem_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, uint64
 // Linux: reset the write watch's kernel dirty bits once per submission. PAGEMAP_SCAN's PM_SCAN_WP_MATCHING re-protects
 // pages but leaves PAGE_IS_WRITTEN set, so without this every page stays written for ever.
 void mem_write_watch_epoch(void);
+// waitstat.c: TOTK_WAIT_LOG=1 accounts every blocking wait the render and guest threads enter, so a slow frame can be
+// attributed to a specific wait instead of guessed at from a thread dump.
+void waitstat_add(const char *name, uint64_t ns);
+void waitstat_dump(const char *why);
+uint64_t waitstat_now(void);
                                                            // GetWriteWatch(RESET): fills pages[] (4 KiB addresses)
                                                            // with the pages of [addr, addr+size) written since the
                                                            // last call, returns their count (at most max; a page

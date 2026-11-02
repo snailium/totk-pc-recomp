@@ -179,6 +179,21 @@ static int32_t add32(int32_t a, int32_t b) {
     return v > 32767 ? 32767 : v < -32768 ? -32768 : v;
 }
 
+// TOTK_INPUT_LOG=1: every change of the action bits, so a run can prove that a key press reaches the bindings.
+static void input_log(uint64_t act, int32_t lx, int32_t ly) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("TOTK_INPUT_LOG");
+        on = v && *v == '1';
+    }
+    if (!on) return;
+    static uint64_t last;
+    static int32_t llx, lly;
+    if (act == last && lx == llx && ly == lly) return;
+    last = act, llx = lx, lly = ly;
+    rt_log("input: actions %#llx, left stick %d/%d", (unsigned long long)act, lx, ly);
+}
+
 void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     input_linux_pump();
     uint64_t act = input_map_buttons(key_down);
@@ -192,6 +207,7 @@ void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_
     if (ly) *ly = hidden ? 0 : add32(kl[1], axis[1]);
     if (rx) *rx = hidden ? 0 : add32(kr[0], axis[2]);
     if (ry) *ry = hidden ? 0 : add32(kr[1], axis[3]);
+    if (!hidden) input_log(act, lx ? *lx : 0, ly ? *ly : 0);
 }
 
 void input_poll_ui(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {

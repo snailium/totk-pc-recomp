@@ -73,6 +73,7 @@ static DWORD WINAPI present_main(void *arg) {
         ReleaseSRWLockExclusive(&pl);
         uint64_t t0 = kern_now_ns();
         wait_until(timer, j.at);
+        waitstat_add("present pacing", kern_now_ns() - t0);
         uint64_t t1 = kern_now_ns();
         vk_present_flip();
         // TOTK_TRACE=present: one line per present: the host present's interval, the interval of the game's present
@@ -92,6 +93,7 @@ static DWORD WINAPI present_main(void *arg) {
 
 void vk_present_drain(void) {
     uint64_t p0 = perf_begin();
+    uint64_t w0 = waitstat_now();
     AcquireSRWLockExclusive(&pl);
     double t0 = (double)kern_now_ns();
     while (pending || busy) {
@@ -108,6 +110,7 @@ void vk_present_drain(void) {
     }
     ReleaseSRWLockExclusive(&pl);
     perf_end(PERF_DRAIN, p0);
+    waitstat_add("present drain", waitstat_now() - w0);
 }
 
 // The present after the frame count: resolves the image and hands the blit to the present thread. queued: when the game
@@ -337,6 +340,9 @@ void gfx_exit_log(void) {
 
 static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
     vk_sync_start();
+    // TOTK_WAIT_LOG=1: the blocking budget of every 60 frames, so a slow frame is attributed rather than guessed.
+    static uint64_t presents;
+    if (++presents % 60 == 0) waitstat_dump("60 frames");
     extern void vk_texture_present_debug(const tex_t *t);
     vk_texture_present_debug(t);
     if (!gfx_replay_async()) {

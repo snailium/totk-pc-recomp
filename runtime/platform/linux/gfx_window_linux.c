@@ -213,13 +213,17 @@ void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int
     VkCtx *c = vk_ctx();
     if (!g_started) return;
     gfx_pump_events();
+    uint64_t wl0 = waitstat_now();
     plat_mutex_lock(&g_pl);
+    waitstat_add("present lock", waitstat_now() - wl0);
     if (g_dirty && !create_swapchain()) {
         plat_mutex_unlock(&g_pl);
         return;
     }
     uint32_t idx = 0;
+    uint64_t wa0 = waitstat_now();
     VkResult r = vkAcquireNextImageKHR(c->device, g_sc, UINT64_MAX, g_acquire[g_frame], VK_NULL_HANDLE, &idx);
+    waitstat_add("acquire image", waitstat_now() - wa0);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         n_blit_ood++;
         create_swapchain();
@@ -233,7 +237,9 @@ void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int
         present_stats();
         return;
     }
+    uint64_t wf0 = waitstat_now();
     vkWaitForFences(c->device, 1, &g_fence[g_frame], VK_TRUE, UINT64_MAX);
+    waitstat_add("blit fence", waitstat_now() - wf0);
     vkResetFences(c->device, 1, &g_fence[g_frame]);
     vkResetCommandBuffer(g_cb[g_frame], 0);
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -394,7 +400,9 @@ void vk_present_flip(void) {
                            .pSwapchains = &g_sc,
                            .pImageIndices = &g_flip_idx};
     vk_queue_lock();
+    uint64_t wp0 = waitstat_now();
     VkResult r = vkQueuePresentKHR(c->gfx_queue, &pi);
+    waitstat_add("queue present", waitstat_now() - wp0);
     if (r == VK_SUCCESS) n_flip_ok++;
     if (n_flip_ok + n_flip_skip <= 3 || (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR))
         rt_log("gfx: present %llu: result %d", n_flip_ok + n_flip_skip, (int)r);

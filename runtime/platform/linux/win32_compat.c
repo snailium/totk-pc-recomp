@@ -12,6 +12,8 @@
 static void watch_install(void);
 static void altstack_install(void);
 void kern_dump_threads(const char *why);   // kernel.c: SIGQUIT prints every guest thread
+uint64_t kern_now_ns(void);                 // host.h: the runtime's clock
+void waitstat_add(const char *name, uint64_t ns);   // waitstat.c: TOTK_WAIT_LOG accounting
 static void quit_handler(int sig) {
     (void)sig;
     kern_dump_threads("SIGQUIT");
@@ -112,14 +114,23 @@ BOOL SleepConditionVariableSRW(PCONDITION_VARIABLE c, PSRWLOCK l, DWORD ms, ULON
     (void)flags;
     pthread_cond_t *cp = COND(c);
     pthread_mutex_t *mp = MUTEX(l);
-    if (ms == INFINITE) return pthread_cond_wait(cp, mp) == 0;
+    uint64_t w0 = kern_now_ns();
+    int r;
+    if (ms == INFINITE) {
+        r = pthread_cond_wait(cp, mp);
+        waitstat_add("cond wait (infinite)", kern_now_ns() - w0);
+        return r == 0;
+    }
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     ts.tv_sec += ms / 1000;
     ts.tv_nsec += (long)(ms % 1000) * 1000000L;
     if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
-    return pthread_cond_timedwait(cp, mp, &ts) == 0;
+    r = pthread_cond_timedwait(cp, mp, &ts);
+    waitstat_add("cond wait (timed)", kern_now_ns() - w0);
+    return r == 0;
 }
+
 void WakeConditionVariable(PCONDITION_VARIABLE c) { pthread_cond_signal(COND(c)); }
 void WakeAllConditionVariable(PCONDITION_VARIABLE c) { pthread_cond_broadcast(COND(c)); }
 
@@ -1501,9 +1512,20 @@ BOOL CloseHandle(HANDLE h) {
     }
 }
 
+static DWORD wait_for_single(HANDLE h, int kind, DWORD ms);
+
 DWORD WaitForSingleObject(HANDLE h, DWORD ms) {
     if (!h) return WAIT_FAILED;
     int kind = *(int *)h;
+    uint64_t w0 = kern_now_ns();
+    DWORD wr = wait_for_single(h, kind, ms);
+    waitstat_add(kind == K_THREAD ? "wait thread" : kind == K_PROCESS ? "wait process" : kind == K_EVENT ? "wait event"
+                                                                                                   : "wait object",
+                 kern_now_ns() - w0);
+    return wr;
+}
+
+static DWORD wait_for_single(HANDLE h, int kind, DWORD ms) {
     if (kind == K_THREAD) {
         ThreadHandle *t = h;
         if (ms == INFINITE) { pthread_join(t->thread, NULL); return WAIT_OBJECT_0; }
