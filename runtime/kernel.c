@@ -1895,6 +1895,8 @@ int kern_svc(Cpu *c, uint32_t imm) {
         if (ev_log()) {
             char d[96];
             rt_logf("event: create %#x/%#x from %s\n", hw, hr, ldr_describe(x[30], d, sizeof d));
+            extern void rt_lastcalls_dump(int n);
+            if (getenv("TOTK_LASTCALLS")) rt_lastcalls_dump(10);
         }
         x[0] = R_OK;
         x[1] = hw;
@@ -1976,6 +1978,9 @@ int kern_svc(Cpu *c, uint32_t imm) {
                 if (idx > 0 && idx < MAX_H && (g_h[idx].type == O_EVENT_R || g_h[idx].type == O_EVENT_W)) {
                     char d[96];
                     rt_logf("event: wait %#x from %s\n", hs[0], ldr_describe(x[30], d, sizeof d));
+                    static int shown;
+                    extern void rt_lastcalls_dump(int n);
+                    if (shown < 4 && getenv("TOTK_LASTCALLS")) { shown++; rt_lastcalls_dump(12); }
                 }
             }
             g_sync_blocks++;

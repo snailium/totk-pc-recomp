@@ -176,9 +176,11 @@ Acceptance for each item is a command that fails before and passes after.
       path is `build/linux-v121/pipeline-cache.bin`
 - [ ] confirm that frames reach the compositor and then the title screen, on `.101` and on BC-250 Bazzite: the port
       still stops right after the first vibration value, before the Windows build's `nvnQueuePresentTexture`, so the
-      the thread dump and `TOTK_EVENT_LOG=1` show the main thread polling two events: the vsync/system one is signalled
-      by host code, the game's own `InterProcessEvent` handle 0x1003 never is. That handle is the next thing to trace:
-      who signals it on Windows (the port has no SVC-side signal for it at all) — the boot now loads content (`/RSDB/*.rstbl.byml.zs`,
+      the thread dump and `TOTK_EVENT_LOG=1` show the main thread in a ~2000/s poll loop over a set of events: the ones
+      the runtime signals from host code (`0x1023`, `0x1025`) fire, while handle `0x1003` — created by the game itself
+      through `nn::os::CreateSystemEvent` -> `detail::CreateInterProcessEvent` at `main+0x2b18240` — never fires. It is
+      an inter-process system event, whose peer on the console is another process; on the port the main loop spins
+      waiting for it and never reaches `nvnQueuePresentTexture` (259 host calls in a 30 s run, none of them a present) — the boot now loads content (`/RSDB/*.rstbl.byml.zs`,
       `/Pack/*.pack.zs`) and stops in the SDK's own `memcpy` (`f_70007bfa6c`/`f_70007bfa94`, deterministic, from
       `f_70007bd0b0`). The copy overruns its source: `si_addr` is `0x737265cc`, inside the heap but past the source
       object, so the length or the end pointer the caller passes is wrong. Next: read the argument setup in
