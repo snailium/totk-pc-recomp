@@ -2212,3 +2212,26 @@ HOST_OVERRIDE(KERN_SYM_INITIALIZE_FIBER, kern_fiber_initialize);
 HOST_OVERRIDE(KERN_SYM_FINALIZE_FIBER, kern_fiber_finalize);
 HOST_OVERRIDE(KERN_SYM_SWITCH_TO_FIBER, kern_fiber_switch);
 HOST_OVERRIDE(KERN_SYM_GET_CURRENT_FIBER, kern_fiber_current);
+
+// A guest fault outside every range the host handles: print the guest stack so the failure names its function. Called
+// from the Linux SIGSEGV path (platform/linux/win32_compat.c) before the default action; Windows has the crash reporter
+// (main.c) instead.
+void kern_guest_crash_report(const char *why, uint64_t addr) {
+    Cpu *c = kern_cpu();
+    if (!c) {
+        rt_log("crash: %s at %#llx on a host thread", why, (unsigned long long)addr);
+        return;
+    }
+    char d[160];
+    rt_log("crash: %s at %#llx", why, (unsigned long long)addr);
+    rt_log("  guest lr  %s", ldr_describe(c->x[30], d, sizeof d));
+    rt_log("  guest pc  %s", ldr_describe(c->pc, d, sizeof d));
+    uint64_t fp = c->x[29];
+    for (int n = 0; n < 24 && fp && !(fp & 7) && fp < RT_ADDRESS_LIMIT; n++) {
+        uint64_t next = 0, lr = 0;
+        if (!plat_mem_read(fp, &next, 8) || !plat_mem_read(fp + 8, &lr, 8)) break;
+        rt_log("  guest frame %2d: %s", n, ldr_describe(lr, d, sizeof d));
+        if (next <= fp || next - fp > (64u << 20)) break;
+        fp = next;
+    }
+}

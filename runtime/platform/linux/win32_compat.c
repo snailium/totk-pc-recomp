@@ -9,6 +9,11 @@
 #define _GNU_SOURCE
 #include "win32_compat.h"
 
+static void watch_install(void);
+__attribute__((constructor)) static void compat_early(void) { watch_install(); }
+
+void kern_guest_crash_report(const char *why, uint64_t addr);   // kernel.c: logs the guest stack of a fatal fault
+
 #include <dirent.h>
 #include <dlfcn.h>
 #include <sched.h>
@@ -755,6 +760,7 @@ typedef struct {
 static Watch g_watch[WATCH_MAX];
 static pthread_mutex_t g_watch_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_watch_installed;
+static int g_watch_traps;   // 1 when pages are mprotect(RD) so writes fault (the trap flavour)
 
 static Watch *watch_for(uintptr_t addr) {
     for (int i = 0; i < WATCH_MAX; i++)
@@ -810,14 +816,13 @@ static void watch_fault(int sig, siginfo_t *si, void *uc_) {
     if (!w) {
         // not a watched page: give the runtime's handlers a chance, then let the fault kill the process
         if (veh_dispatch(si, uc) == EXCEPTION_CONTINUE_EXECUTION) return;
+        kern_guest_crash_report("unhandled access violation", (uint64_t)(uintptr_t)si->si_addr);
         signal(SIGSEGV, SIG_DFL);
         return;
     }
-    if (veh_dispatch(si, uc) == EXCEPTION_CONTINUE_EXECUTION) {
-        size_t page = ((uintptr_t)si->si_addr - w->base) / 4096;
-        if (page < w->size / 4096) __atomic_store_n(&w->dirty[page], 1, __ATOMIC_RELAXED);
-        return;
-    }
+    // A watched page: record the write and make the page writable until the next GetWriteWatch(RESET) protects it
+    // again. The vectored handlers are deliberately not consulted here: the runtime's crash reporter is one of them and
+    // would exit the process on what is a normal write-watch fault.
     size_t page = ((uintptr_t)si->si_addr - w->base) / 4096;
     if (page < w->size / 4096) __atomic_store_n(&w->dirty[page], 1, __ATOMIC_RELAXED);
     mprotect((void *)(w->base + page * 4096), 4096, PROT_READ | PROT_WRITE);
@@ -851,6 +856,28 @@ static size_t page_up(size_t n) {
     return (n + p - 1) & ~(p - 1);
 }
 
+// A watched range starts read-only: the first write faults, the handler records the page and makes it writable until
+// the next GetWriteWatch(RESET) protects it again.
+static void watch_after_commit(void *addr, size_t n) {
+    if (!watch_for((uintptr_t)addr)) return;
+    mprotect(addr, n, PROT_READ);
+}
+
+static void watch_register(void *base, size_t n) {
+    watch_install();
+    pthread_mutex_lock(&g_watch_lock);
+    for (int i = 0; i < WATCH_MAX; i++) {
+        if (g_watch[i].dirty) continue;
+        uint8_t *bits = calloc(n / 4096 + 1, 1);
+        if (!bits) break;
+        g_watch[i].base = (uintptr_t)base;
+        g_watch[i].size = n;
+        g_watch[i].dirty = bits;
+        break;
+    }
+    pthread_mutex_unlock(&g_watch_lock);
+}
+
 void *VirtualAlloc(void *addr, SIZE_T size, DWORD type, DWORD prot) {
     size_t n = page_up(size ? size : 1);
     int flags = MAP_PRIVATE | MAP_ANONYMOUS;
@@ -862,20 +889,7 @@ void *VirtualAlloc(void *addr, SIZE_T size, DWORD type, DWORD prot) {
     if (addr) flags |= MAP_FIXED_NOREPLACE;
     void *m = mmap(addr, n, p, flags, -1, 0);
     if (m == MAP_FAILED) { SetLastError(errno == EEXIST ? ERROR_ALREADY_EXISTS : errno); return NULL; }
-    if ((type & MEM_WRITE_WATCH) && (type & MEM_COMMIT)) {
-        watch_install();
-        pthread_mutex_lock(&g_watch_lock);
-        for (int i = 0; i < WATCH_MAX; i++) {
-            if (g_watch[i].dirty) continue;
-            g_watch[i].base = (uintptr_t)m;
-            g_watch[i].size = n;
-            g_watch[i].dirty = calloc(n / 4096 + 1, 1);
-            if (!g_watch[i].dirty) { g_watch[i].size = 0; break; }
-            mprotect(m, n, PROT_READ);
-            break;
-        }
-        pthread_mutex_unlock(&g_watch_lock);
-    }
+    if (type & MEM_WRITE_WATCH) watch_register(m, n);   // reservations too: the pages are committed inside it later
     return m;
 }
 
@@ -941,6 +955,10 @@ SIZE_T VirtualQuery(const void *addr, MEMORY_BASIC_INFORMATION *mbi, SIZE_T len)
 }
 
 UINT GetWriteWatch(DWORD flags, void *base, SIZE_T size, void **pages, ULONG_PTR *count, DWORD *granularity) {
+    // Without a hardware dirty-bit source (userfaultfd) the trap flavour is not armed: pages are left writable, so
+    // nothing is ever recorded and the honest answer is "not tracked". Callers then treat every page as written,
+    // which is slow but never stale. See docs/linux.md, M4.
+    if (!g_watch_traps) return 1;
     Watch *w = watch_for((uintptr_t)base);
     if (!w || !count || !granularity || !pages) return 1;
     size_t first = ((uintptr_t)base - w->base) / 4096;

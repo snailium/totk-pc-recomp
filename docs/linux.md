@@ -171,6 +171,15 @@ Acceptance for each item is a command that fails before and passes after.
 - **`CreateDirectoryW` must report `ERROR_ALREADY_EXISTS`**, not succeed silently: `ov_system.c`'s profile setup
   creates each path prefix and checks that code.
 
+### Write watch: armed only with userfaultfd
+
+The trap flavour (mprotect `PROT_READ` + `SIGSEGV`) cannot be armed for the whole watched block: the block holds the
+guest stack and the pools the GPU imports, and `VK_EXT_external_memory_host` refuses read-only pages, so protecting
+everything at commit breaks both. Until the userfaultfd path lands (it needs `UFFD_FEATURE_WP_ASYNC`, which Docker's
+default seccomp policy blocks — the game must run in a container with `--security-opt seccomp=unconfined`, or on a
+native host), `GetWriteWatch` honestly reports "not tracked" and the graphics layer treats every page as written. That
+is slower but never stale. `g_watch_traps` in `win32_compat.c` is the switch the userfaultfd implementation flips.
+
 ### M4 — memory semantics
 - [ ] write watch: userfaultfd path, soft-dirty fallback, trap fallback; logged at startup
 - [ ] preemption: `SIGUSR1` + `ucontext`; verify `TOTK_ASYNC_PREEMPT=0/1` both work
