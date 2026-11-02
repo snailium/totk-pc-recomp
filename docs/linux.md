@@ -213,8 +213,15 @@ Acceptance for each item is a command that fails before and passes after.
       memory callback, ~45 frames a second) while `nvnWindowAcquireTexture` is called once and
       `nvnQueuePresentTexture` never, so the guest renders the loading screen into the window texture it holds and
       presents only when loading finishes
-- [ ] poking the game's own system event (`TOTK_POKE_EVENT=0x1003`, a host thread signalling it every 5 ms) changes
-      nothing, so that event is not what the boot waits for
+- [x] the freeze is the game's inter-process system event. `TOTK_POKE_EVENT=0x1003` (a host thread signalling that
+      handle every 5 ms) moves the boot past the freeze: the log gains the 1920x1080 texture that cannot alias its
+      pool, a 256 MiB headroom block and `prepo: play report kept local`, which on Windows appears immediately before
+      `nvnQueuePresentTexture`. The earlier negative result was a bug in the poke itself: the guest waits on the
+      *readable* handle while the poke looked the handle up as a writable one, so it never signalled anything.
+- [ ] reaching a frame from there needs the peer's behaviour, not just the signal: the event is the applet/system
+      message channel (the guest creates it with `nn::os::CreateSystemEvent` in inter-process mode), whose peer on a
+      console writes a message into shared memory and then signals. Signalling alone advances one step and the boot
+      stops at the play report; emulating the applet message protocol is the next piece of work.
 - [ ] the stall is frozen, not slow: three samples 45 s apart in one 400 s run show the same 6817 log lines, the same
       5455 `AllocateMemoryPages` and no present; no translator process is alive, so nothing is being compiled either.
       50 guest threads and 63 host threads exist; every guest thread sits in an SDK wait (`ReceiveLightMessageQueue`,

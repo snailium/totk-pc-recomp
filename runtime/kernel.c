@@ -2344,7 +2344,9 @@ static DWORD WINAPI poke_body(void *arg) {
     for (;;) {
         Sleep(5);
         lock();
+        // The guest waits on the readable handle while the writable one is what a signaller holds: accept either end.
         Event *e = h_peek(h, O_EVENT_W);
+        if (!e) e = h_peek(h, O_EVENT_R);
         if (e) { e->signaled = 1; wake_sync_waiters(); }
         unlock();
     }
