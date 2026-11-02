@@ -267,6 +267,11 @@ Acceptance for each item is a command that fails before and passes after.
 - [x] the BC-250 validation reached the title screen: the run presents the Zelda title art and menu (Continue, New Game,
       Options, amiibo) through a real Wayland window at 12.5-12.6 fps, with the art animating between captures. The
       captures stay outside the repository, like the game data.
+- [x] what a gameplay frame costs on the BC-250, from `TOTK_TRACE=gfx`: about **130 render passes and 280-330 draws**,
+      55 clears and 19 dispatches in one submission, with seven 1080p targets, several 1600x900 ones and a long tail of
+      small ones. The Switch is tile-based and a pass change is nearly free there; on a desktop GPU each of the 130
+      passes loads and stores its attachments, which is the shape the remaining 40 ms of GPU time has -- not a lack of
+      compute units.
 - [x] the BC-250's 40 compute units are unlocked and in use: `bc250-cu-live-manager.sh status` reports
       **`CUs active & routed: 40/40`**, with WGP3 and WGP4 of every shader array routed through SPI (`SPI 0x1f`,
       `CC 0xffe00000`) instead of the driver. `dmesg`'s `active_cu_number 24` is the *boot* topology and stays 24 with
