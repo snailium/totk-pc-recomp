@@ -252,8 +252,16 @@ that a `RESET` query reports none.
 - [ ] compare frame time with the Windows build on the same scene, same GPU
 
 ### M5 — packaging and targets
-- [ ] portable Linux folder (ELF + `lib/` + `exefs/` + `romfs/`), `totk.ini` defaults, desktop entry
-- [ ] glibc 2.35 build container; optional Steam Runtime manifest
+- [x] `tools/make_linux_release.py` assembles `dist/totk-linux`: the ELF, `totk_xlate` and its `.id`, `totk.ini.example`,
+      `run.sh` (keeps everything beside the script, puts `lib/` on `LD_LIBRARY_PATH`, documents the write-watch
+      fallback) and a README. `--with-libs` copies SDL3, opus, libvpx and zstd. Verified: the folder runs `--selftest`
+      from its own directory and after being copied elsewhere; `LD_LIBRARY_PATH=./lib ldd ./totk` resolves the bundled
+      libraries.
+- [x] `tools/ci_linux.sh` builds and runs `--selftest`: the whole check needs no game files
+- [ ] glibc baseline: the build host's glibc leaks into the binary, which asked for `GLIBC_2.43` (the container's math
+      symbols) and would not start on a target with 2.38-2.41. `-fno-math-errno` is set for the runtime and the
+      generated code so `sqrtf`/`log10f` inline instead of binding to the newest re-versioned symbols; the C23
+      `__isoc23_*` imports still ask for 2.38.
 - [ ] BC-250: Bazzite, RADV gfx1013, 16 GB APU — boots to field, log shows the write-watch mode and the GPU
 - [ ] Steam Machine: SteamOS, RX 9070, gamepad — same, plus overlay/menu check
 - [ ] CI: build the Linux ELF and run `--selftest` (no game files needed)

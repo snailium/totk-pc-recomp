@@ -23,9 +23,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CC = os.environ.get('CC', 'clang')
-GEN_FLAGS = ['-O1', '-fno-strict-aliasing', '-Wno-return-type', '-Wno-unused-label', '-fvisibility=hidden',
+GEN_FLAGS = ['-O1', '-fno-strict-aliasing', '-fno-math-errno', '-Wno-return-type', '-Wno-unused-label', '-fvisibility=hidden',
              '-march=x86-64-v3']
-RT_FLAGS = ['-O2', '-g', '-Wall', '-fno-strict-aliasing', '-march=x86-64-v3']
+# -fno-math-errno lets clang turn sqrtf/log10f into the hardware/math-library form it can inline, which keeps the binary
+# off the newest glibc's re-versioned math symbols (a 2.43 host otherwise ties the executable to glibc 2.43).
+RT_FLAGS = ['-O2', '-g', '-Wall', '-fno-strict-aliasing', '-march=x86-64-v3', '-fno-math-errno']
 # The Linux build replaces these with platform/linux.c, platform/linux/win32_compat.c and the SDL3 window layer.
 WINDOWS_ONLY = {'gfx_window.c', 'gfx_window_probe.c', 'input_win.c', 'swkbd_win.c', 'prof_win.c', 'rdoc_win.c'}
 INCLUDES = ['-I', str(ROOT / 'runtime'), '-I', str(ROOT / 'runtime' / 'platform'),
