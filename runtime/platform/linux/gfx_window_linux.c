@@ -260,6 +260,8 @@ void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int
 
 void vk_present_flip(void) {
     if (!g_flip_on || !g_started) return;
+    static unsigned long long presents, last_log;
+    uint64_t t = (uint64_t)(plat_now_ns() / 1000000);
     VkCtx *c = vk_ctx();
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
                            .waitSemaphoreCount = 1,
@@ -271,6 +273,15 @@ void vk_present_flip(void) {
     VkResult r = vkQueuePresentKHR(c->gfx_queue, &pi);
     vk_queue_unlock();
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) g_dirty = 1;
+    presents++;
+    if (presents == 1)
+        rt_logf("gfx: first present (swapchain %ux%u, %s)\n", g_sc_ext.width, g_sc_ext.height, r == VK_SUCCESS ? "ok" : "result != success");
+    if (presents - last_log >= 120) {
+        static uint64_t t0;
+        if (!t0) t0 = t;
+        if (t > t0) rt_logf("gfx: %llu presents, %.1f fps\n", presents, (double)presents * 1000.0 / (double)(t - t0));
+        last_log = presents;
+    }
     g_flip_on = 0;
     g_frame = (g_frame + 1) % MAX_FRAMES;
 }

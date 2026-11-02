@@ -163,8 +163,11 @@ Acceptance for each item is a command that fails before and passes after.
       override it); `=1` turns the redirects on
 - [x] the guest issues draw commands: after the vibration init the port runs the renderer (`nvnCommandBufferSetViewport`,
       `BindBlendState`, `nvnQueueFenceSync`, ... thousands of calls), so the boot reaches the drawing stage
-- [ ] confirm that frames reach the compositor (the run produces no present log and no screenshot yet) and then the
-      title screen, on `.101` and on BC-250 Bazzite — the boot now loads content (`/RSDB/*.rstbl.byml.zs`,
+- [x] the present path logs (`gfx: first present (swapchain WxH)` and a rate line every 120 presents), which is the
+      cheapest way to tell "drawing" from "presenting": the port issues thousands of first-time nvn calls but never
+      reaches `nvnQueuePresentTexture`, and `--prepare-shaders` populates the shader cache so the pipeline library
+      prebuild that gated the Windows build is not paid on every run
+- [ ] confirm that frames reach the compositor and then the title screen, on `.101` and on BC-250 Bazzite — the boot now loads content (`/RSDB/*.rstbl.byml.zs`,
       `/Pack/*.pack.zs`) and stops in the SDK's own `memcpy` (`f_70007bfa6c`/`f_70007bfa94`, deterministic, from
       `f_70007bd0b0`). The copy overruns its source: `si_addr` is `0x737265cc`, inside the heap but past the source
       object, so the length or the end pointer the caller passes is wrong. Next: read the argument setup in
