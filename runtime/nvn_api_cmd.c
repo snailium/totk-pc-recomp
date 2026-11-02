@@ -58,7 +58,20 @@ static void cb_set_disabled(const cmd_t *o, unsigned kind, int disabled) {
     ReleaseSRWLockExclusive(&cb_lock);
 }
 
+// TOTK_NVN_MEMCB=0: never enter the guest's command/control memory callback. The recording lives in host memory, so the
+// callback only keeps the guest's pool bookkeeping honest; entering it from the replay can park the submitting thread on
+// a guest condition variable that only a GPU completion would wake, which is the deadlock at the end of the boot.
+static int memcb_enabled(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("TOTK_NVN_MEMCB");
+        on = !(v && *v == '0');
+    }
+    return on;
+}
+
 static void memory_event(Cpu *c, cmd_t *o, int event, uint64_t min) {
+    if (!memcb_enabled()) return;
     if (!o->cb || (cb_disabled(o) & (event == NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_COMMAND_MEMORY ? CB_NO_COMMAND
                                                                                                      : CB_NO_CONTROL)))
         return;
