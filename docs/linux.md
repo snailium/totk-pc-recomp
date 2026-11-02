@@ -180,7 +180,12 @@ Acceptance for each item is a command that fails before and passes after.
       the runtime signals from host code (`0x1023`, `0x1025`) fire, while handle `0x1003` — created by the game itself
       through `nn::os::CreateSystemEvent` -> `detail::CreateInterProcessEvent` at `main+0x2b18240` — never fires. It is
       an inter-process system event, whose peer on the console is another process; on the port the main loop spins
-      waiting for it and never reaches `nvnQueuePresentTexture` (259 host calls in a 30 s run, none of them a present) — the boot now loads content (`/RSDB/*.rstbl.byml.zs`,
+      waiting for it and never reaches `nvnQueuePresentTexture` (259 host calls in a 30 s run, none of them a present).
+      The call ring names the waiter: `main+0x8832b8` calls `nn::os::WaitSystemEvent`, which goes through
+      `detail::WaitInterProcessEvent` into `InterProcessEventImplByHorizon::Wait`. `TOTK_ASSUME_FOCUS=1` changes
+      nothing. The host-call sequence is identical to the Windows build for 174 calls and then diverges: Windows goes
+      into `nn::codec` (hardware Opus), the play report save and `nvnQueuePresentTexture`, while the port goes into
+      `nn::fs::SetPriorityOnCurrentThread` and file reads — it is still loading when Windows is presenting — the boot now loads content (`/RSDB/*.rstbl.byml.zs`,
       `/Pack/*.pack.zs`) and stops in the SDK's own `memcpy` (`f_70007bfa6c`/`f_70007bfa94`, deterministic, from
       `f_70007bd0b0`). The copy overruns its source: `si_addr` is `0x737265cc`, inside the heap but past the source
       object, so the length or the end pointer the caller passes is wrong. Next: read the argument setup in
