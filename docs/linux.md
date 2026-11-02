@@ -238,6 +238,10 @@ Acceptance for each item is a command that fails before and passes after.
       asynchronous (or no watch at all) for the pools Vulkan imports. `TOTK_WATCH=self` is the first step of that: the
       freshness check then answers from the port's own stamps only and a texture nothing wrote reports no change, with a
       2 MiB region filter first so an untouched texture costs one comparison per region rather than one per page.
+- [x] the frame budget on the BC-250 is the GPU, not the CPU: the submitting thread blocks in `ioctl(ac_drm_cs_submit_raw2)`
+      (the kernel waiting for room in the command ring) during the load, with the ASTC compute decoder and the replay
+      queue ahead of it. That is a property of the hardware and of how much work the port asks of it, not of the write
+      watch alone; a faster GPU (the 7900 XTX on `.101`) is where the same build should be measured next.
 - [x] the window survives a compositor close request: KDE sends `SDL_EVENT_QUIT` when a client misses its pings (a slow
       frame can cause that) and a guest cannot reopen a window, so the port logs it once and keeps the surface.
 - [ ] the frame rate is 2.5 fps and the loading screen never finishes because textures are re-uploaded every frame:
