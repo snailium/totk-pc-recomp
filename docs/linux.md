@@ -189,7 +189,13 @@ Acceptance for each item is a command that fails before and passes after.
       The port is not idle while it waits: a 60 s run makes 5455 `AllocateMemoryPages` calls (the NVN command buffer
       memory callback, ~45 frames a second) while `nvnWindowAcquireTexture` is called once and
       `nvnQueuePresentTexture` never, so the guest renders the loading screen into the window texture it holds and
-      presents only when loading finishes — the boot now loads content (`/RSDB/*.rstbl.byml.zs`,
+      presents only when loading finishes
+- [ ] the stall is frozen, not slow: three samples 45 s apart in one 400 s run show the same 6817 log lines, the same
+      5455 `AllocateMemoryPages` and no present; no translator process is alive, so nothing is being compiled either.
+      50 guest threads and 63 host threads exist; every guest thread sits in an SDK wait (`ReceiveLightMessageQueue`,
+      `Sleep`, or `InterProcessEventImplByHorizon::Wait`)
+- [ ] both validation targets have been unreachable for many rounds: `ssh bc250@192.168.111.144` and the Steam Machine
+      at 192.168.111.142 answer `No route to host`; the port's end-to-end validation cannot happen until they are back — the boot now loads content (`/RSDB/*.rstbl.byml.zs`,
       `/Pack/*.pack.zs`) and stops in the SDK's own `memcpy` (`f_70007bfa6c`/`f_70007bfa94`, deterministic, from
       `f_70007bd0b0`). The copy overruns its source: `si_addr` is `0x737265cc`, inside the heap but past the source
       object, so the length or the end pointer the caller passes is wrong. Next: read the argument setup in
