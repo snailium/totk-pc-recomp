@@ -264,9 +264,8 @@ void input_linux_pump(void) {
     memset(axis_vals, 0, sizeof axis_vals);
 
     if (pad && SDL_GamepadConnected(pad)) {
-        for (int i = 0; i < PAD_COUNT; i++) {
-            if (!pad_sdl[i]) continue;
-            if (SDL_GetGamepadButton(pad, pad_sdl[i])) pad_down[i] = 1;
+        for (int p = PAD_SOUTH; p < PAD_ZL; p++) {
+            pad_down[p] = SDL_GetGamepadButton(pad, pad_sdl[p]);
         }
         int lt = (int)SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
         int rt = (int)SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
@@ -299,10 +298,17 @@ static void input_log(uint64_t act, int32_t lx, int32_t ly) {
     }
     if (!on) return;
     static uint64_t last;
-    static int32_t llx, lly;
-    if (act == last && lx == llx && ly == lly) return;
-    last = act, llx = lx, lly = ly;
-    rt_log("input: actions %#llx, left stick %d/%d", (unsigned long long)act, lx, ly);
+    if (act == last) return;
+    last = act;
+    char bstr[128] = {0};
+    int off = 0;
+    for (int i = 0; i < 16; i++) {
+        if (act & (1ull << i)) {
+            const char *an = input_action_name(i);
+            if (an) off += snprintf(bstr + off, sizeof(bstr) - off, "%s ", an);
+        }
+    }
+    rt_log("input: buttons pressed: [%s] (mask %#llx, stick %d/%d)", bstr[0] ? bstr : "none", (unsigned long long)act, lx, ly);
 }
 
 void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
