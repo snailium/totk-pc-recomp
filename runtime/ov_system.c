@@ -94,6 +94,14 @@ const char *ov_language(void) {
                                         "zh-TW", "en-GB", "fr-CA", "es-419", "zh-Hans", "zh-Hant", "pt-BR"};
     const char *code = cfg_get("TOTK_LANG");   // no fixed default: TOTK_LOCALE or the Windows user locale decides when unset
     if (code && *code) {
+        if (!strcmp(code, "zh") || !strcmp(code, "chs") || !strcmp(code, "zh_CN") || !strcmp(code, "zh-cn"))
+            return "zh-Hans";
+        if (!strcmp(code, "cht") || !strcmp(code, "zh_TW") || !strcmp(code, "zh-tw") || !strcmp(code, "zh-HK"))
+            return "zh-Hant";
+        if (!strcmp(code, "en") || !strcmp(code, "english"))
+            return "en-US";
+        if (!strcmp(code, "jp") || !strcmp(code, "japanese"))
+            return "ja";
         for (size_t i = 0; i < sizeof codes / sizeof *codes; i++)
             if (!strcmp(code, codes[i])) return codes[i];
         rt_fatal("TOTK_LANG '%s' is not a Switch language code", code);
@@ -791,10 +799,15 @@ static const uint8_t *font_data(Cpu *c, const char *fn, int64_t t) {
         fclose(f);
         uint64_t size = got == (size_t)len ? ov_bfttf_size(p, (uint64_t)len) : 0;
         if (!size) rt_fatal("nn::pl: shared font %s is not a BFTTF font", path);
+        uint32_t key = be32(p) ^ BFTTF_MAGIC;
+        if (key) {
+            uint8_t kb[4] = {(uint8_t)(key >> 24), (uint8_t)(key >> 16), (uint8_t)(key >> 8), (uint8_t)key};
+            for (size_t i = 0; i < (size_t)len; i++) p[i] ^= kb[i % 4];
+        }
         fonts.size[t] = size;
         __atomic_store_n(&fonts.file[t], p, __ATOMIC_RELEASE);
-        rt_log("pl: shared font %lld (%s): %llu bytes from %s", (long long)t, font_type_name(t),
-               (unsigned long long)size, path);
+        rt_log("pl: shared font %lld (%s): %llu bytes from %s%s", (long long)t, font_type_name(t),
+               (unsigned long long)size, path, key ? " (decrypted)" : "");
     }
     const uint8_t *p = fonts.file[t];
     ReleaseSRWLockExclusive(&fonts.lock);
@@ -811,6 +824,16 @@ static void ov_font_size(Cpu *c) {
 }
 
 // ==== registration
+void nvn_font_atlas_dirty(void);
+
+static void obs_font_acquire_glyph(Cpu *c) {
+    rt_original(c);
+    uint64_t glyphmap = c->x[0];
+    if (glyphmap) nvn_font_atlas_dirty();
+}
+HOST_OBSERVER("_ZN2nn6fontll18ScalableFontEngine15AcquireGlyphmapEjt", obs_font_acquire_glyph);
+
+
 HOST_OVERRIDE("_ZN2nn2oe10InitializeEv", ov_oe_initialize);
 HOST_OVERRIDE("_ZN2nn2oe18GetDesiredLanguageEv", ov_desired_language);
 HOST_OVERRIDE("_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi", ov_performance_config);

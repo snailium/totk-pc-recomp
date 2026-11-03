@@ -184,6 +184,48 @@ static void tex_release(tex_t *o) {
     gfx_backend()->texture_release(o);
 }
 
+typedef struct { uint64_t addr, size; } FontAtlas;
+#define MAX_FONT_ATLASES 8
+static FontAtlas font_atlases[MAX_FONT_ATLASES];
+static int n_font_atlases;
+static SRWLOCK font_atlas_lock = SRWLOCK_INIT;
+
+void nvn_font_atlas_register(uint64_t addr, uint64_t size) {
+    if (!addr || !size) return;
+    AcquireSRWLockExclusive(&font_atlas_lock);
+    for (int i = 0; i < n_font_atlases; i++) {
+        if (font_atlases[i].addr == addr) {
+            font_atlases[i].size = size;
+            ReleaseSRWLockExclusive(&font_atlas_lock);
+            return;
+        }
+    }
+    if (n_font_atlases < MAX_FONT_ATLASES) {
+        font_atlases[n_font_atlases++] = (FontAtlas){addr, size};
+    }
+    ReleaseSRWLockExclusive(&font_atlas_lock);
+}
+
+void nvn_font_atlas_unregister(uint64_t addr) {
+    if (!addr) return;
+    AcquireSRWLockExclusive(&font_atlas_lock);
+    for (int i = 0; i < n_font_atlases; i++) {
+        if (font_atlases[i].addr == addr) {
+            font_atlases[i] = font_atlases[--n_font_atlases];
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&font_atlas_lock);
+}
+
+void nvn_font_atlas_dirty(void) {
+    AcquireSRWLockShared(&font_atlas_lock);
+    for (int i = 0; i < n_font_atlases; i++) {
+        nvn_guest_written(font_atlases[i].addr, font_atlases[i].size);
+    }
+    ReleaseSRWLockShared(&font_atlas_lock);
+}
+
 // NVNboolean nvnTextureInitialize(NVNtexture *t, const NVNtextureBuilder *b)
 NVN_API(nvnTextureInitialize) {
     tex_t *o = arg_p(c, 0);
@@ -208,6 +250,9 @@ NVN_API(nvnTextureInitialize) {
         memcpy(o->mem, s->pkg_data, (size_t)o->L.size);
         nvn_guest_written((uintptr_t)o->mem, o->L.size);
     }
+    if (o->mem && !nvn_gpu_only((uintptr_t)o->mem) && o->d.format == NVN_FORMAT_R8 && o->d.width >= 512 && o->d.height >= 512) {
+        nvn_font_atlas_register((uintptr_t)o->mem, o->L.size);
+    }
     o->serial = nvn_new_serial();
     live_put(o);
     NVN_LOG("Texture %p %ux%ux%u lv%u fmt=%#x tgt=%d flags=%#x size=%#llx", (void *)o, o->d.width, o->d.height,
@@ -218,6 +263,7 @@ NVN_API(nvnTextureInitialize) {
 NVN_API(nvnTextureFinalize) {
     tex_t *o = arg_p(c, 0);
     if (o->magic == NVN_TEX_MAGIC && o->serial) tex_release(o);
+    if (o->mem) nvn_font_atlas_unregister((uintptr_t)o->mem);
     o->magic = 0;
 }
 #define CTX(c) ((const tex_t *)arg_p(c, 0))

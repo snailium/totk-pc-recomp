@@ -328,13 +328,18 @@ void nvn_flush_stats(uint64_t out[2][3][2]) {
 }
 
 // void nvnMemoryPoolFlushMappedRange(const NVNmemoryPool *p, ptrdiff_t offset, size_t size): storage is coherent; a
-// back end with device-side copies hears of it (nvn_pool_flushed)
+// back end with device-side copies hears of it (nvn_pool_flushed) and host write watch notes the CPU write
 NVN_API(nvnMemoryPoolFlushMappedRange) {
     const pool_t *p = arg_p(c, 0);
     int64_t off = (int64_t)arg_x(c, 1);
     uint64_t size = arg_x(c, 2);
     if (rt_trace & RT_TRACE_PERF) flush_note(0, p, size);
-    if (p && off >= 0 && (uint64_t)off < p->size) nvn_pool_flushed(p, (uint64_t)off, size < p->size - (uint64_t)off ? size : p->size - (uint64_t)off);
+    if (p && off >= 0 && (uint64_t)off < p->size) {
+        uint64_t clamped = size < p->size - (uint64_t)off ? size : p->size - (uint64_t)off;
+        nvn_pool_flushed(p, (uint64_t)off, clamped);
+        if (p->mem && !nvn_gpu_only((uintptr_t)p->mem))
+            nvn_guest_written((uintptr_t)p->mem + (uint64_t)off, clamped);
+    }
 }
 // NVNmemoryPoolFlags nvnMemoryPoolGetFlags(const NVNmemoryPool *p)
 NVN_API(nvnMemoryPoolGetFlags) { ret_x(c, ((const pool_t *)arg_p(c, 0))->flags); }

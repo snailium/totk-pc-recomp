@@ -106,3 +106,9 @@ void nvn_pool_invalidate(const pool_t *p, uint64_t off, uint64_t size);
 // MemoryPoolFlushMappedRange: the CPU wrote [mem + off, mem + off + size). Weak no-op in nvn_ext.c; a back end that keeps
 // device-side copies of pool memory (vk_memory.c's VRAM mirror) defines it and copies the range again.
 void nvn_pool_flushed(const pool_t *p, uint64_t off, uint64_t size);
+
+// Font texture atlas registration and dirty tracking for CPU-rasterized scalable glyphs
+void nvn_font_atlas_register(uint64_t addr, uint64_t size);
+void nvn_font_atlas_unregister(uint64_t addr);
+void nvn_font_atlas_dirty(void);
+
