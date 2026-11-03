@@ -278,30 +278,35 @@ int vk_present_record_blit(VkCommandBuffer cb, VkImage src, VkImageLayout layout
         vkBeginCommandBuffer(cb, &bi);
     }
     VkImageLayout src_layout = layout;
-    image_barrier(cb, src, src_layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                  VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
-                  VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
     image_barrier(cb, g_sc_img[idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                   VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    VkImageBlit blit = {0};
     int cx = 0, cy = 0, cw = w, ch = h;
     if (crop) { cx = crop[0]; cy = crop[1]; cw = crop[2]; ch = crop[3]; }
     if (cw <= 0) cw = w;
     if (ch <= 0) ch = h;
-    blit.srcSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    blit.srcOffsets[0] = (VkOffset3D){cx, cy, 0};
-    blit.srcOffsets[1] = (VkOffset3D){cx + cw, cy + ch, 1};
-    blit.dstSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    blit.dstOffsets[0] = (VkOffset3D){0, 0, 0};
-    blit.dstOffsets[1] = (VkOffset3D){(int32_t)g_sc_ext.width, (int32_t)g_sc_ext.height, 1};
-    static int logged_fmt_rec;
-    if (!logged_fmt_rec++) rt_log("gfx: merged blit %dx%d format %d -> swapchain %ux%u format %d", w, h, (int)fmt, g_sc_ext.width,
-                                  g_sc_ext.height, (int)g_sc_fmt);
-    vkCmdBlitImage(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_sc_img[idx],
-                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
-    image_barrier(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, src_layout,
-                  VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
-                  VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT);
+    const int rect[4] = {cx, cy, cw, ch};
+    int general = (src_layout == VK_IMAGE_LAYOUT_GENERAL);
+    int upscaled = general && vk_fsr_record(cb, g_frame, src, fmt, w, h, rect, g_sc_img[idx], g_sc_ext.width, g_sc_ext.height);
+    if (!upscaled) {
+        image_barrier(cb, src, src_layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                      VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+                      VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+        VkImageBlit blit = {0};
+        blit.srcSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        blit.srcOffsets[0] = (VkOffset3D){cx, cy, 0};
+        blit.srcOffsets[1] = (VkOffset3D){cx + cw, cy + ch, 1};
+        blit.dstSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        blit.dstOffsets[0] = (VkOffset3D){0, 0, 0};
+        blit.dstOffsets[1] = (VkOffset3D){(int32_t)g_sc_ext.width, (int32_t)g_sc_ext.height, 1};
+        static int logged_fmt_rec;
+        if (!logged_fmt_rec++) rt_log("gfx: merged blit %dx%d format %d -> swapchain %ux%u format %d", w, h, (int)fmt, g_sc_ext.width,
+                                      g_sc_ext.height, (int)g_sc_fmt);
+        vkCmdBlitImage(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_sc_img[idx],
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+        image_barrier(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, src_layout,
+                      VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                      VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT);
+    }
 
     VkCtx *c = vk_ctx();
     const char *menu_shot = NULL;
@@ -316,7 +321,7 @@ int vk_present_record_blit(VkCommandBuffer cb, VkImage src, VkImageLayout layout
         .height = g_sc_ext.height,
         .image_w = w,
         .image_h = h,
-        .scaler = 0
+        .scaler = upscaled ? 2 : ((uint32_t)cw != g_sc_ext.width || (uint32_t)ch != g_sc_ext.height)
     };
     int overlay = g_sc_view[idx] &&
                   menu_overlay_frame(__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), &mt, &menu_shot);
@@ -482,15 +487,21 @@ void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int
         }
     }
 skip_dump:
-    // TOTK_PRESENT_TEST=1: clear the swapchain image instead of blitting, to tell a broken blit from a broken present.
-    if (getenv("TOTK_PRESENT_TEST")) {
-        static const VkClearColorValue red = {{1.0f, 0.0f, 0.0f, 1.0f}};
-        VkImageSubresourceRange r = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        vkCmdClearColorImage(g_cb[g_frame], g_sc_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &red, 1, &r);
-        rt_log("gfx: present test: swapchain image %u cleared red", idx);
-    } else
-    vkCmdBlitImage(g_cb[g_frame], src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_sc_img[idx],
-                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+    int rect_pi[4] = {cx, cy, cw, ch};
+    int general_pi = (src_layout == VK_IMAGE_LAYOUT_GENERAL);
+    int upscaled = general_pi && vk_fsr_record(g_cb[g_frame], g_frame, src, fmt, w, h, rect_pi, g_sc_img[idx], g_sc_ext.width, g_sc_ext.height);
+    if (!upscaled) {
+        // TOTK_PRESENT_TEST=1: clear the swapchain image instead of blitting, to tell a broken blit from a broken present.
+        if (getenv("TOTK_PRESENT_TEST")) {
+            static const VkClearColorValue red = {{1.0f, 0.0f, 0.0f, 1.0f}};
+            VkImageSubresourceRange r = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vkCmdClearColorImage(g_cb[g_frame], g_sc_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &red, 1, &r);
+            rt_log("gfx: present test: swapchain image %u cleared red", idx);
+        } else {
+            vkCmdBlitImage(g_cb[g_frame], src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_sc_img[idx],
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+        }
+    }
 
     const char *menu_shot = NULL;
     MenuTarget mt = {
@@ -504,7 +515,7 @@ skip_dump:
         .height = g_sc_ext.height,
         .image_w = w,
         .image_h = h,
-        .scaler = 0
+        .scaler = upscaled ? 2 : ((uint32_t)cw != g_sc_ext.width || (uint32_t)ch != g_sc_ext.height)
     };
     int overlay = g_sc_view[idx] &&
                   menu_overlay_frame(__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), &mt, &menu_shot);
@@ -847,6 +858,7 @@ void gfx_window_stop(void) {
 
 void gfx_window_release_vk(void) {
     menu_vk_release();
+    vk_fsr_release();
     gfx_window_stop();
 }
 

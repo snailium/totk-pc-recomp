@@ -1,0 +1,82 @@
+// Anime4K line thinning & gradient push pass (runtime/vk_fsr.c).
+// Detects cel-shaded edge contours and thins/sharpens outlines according to sharpness setting.
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D src;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D dst;
+
+layout(push_constant) uniform Params {
+    vec4 size;   // width, height, strength (0..1), unused
+} pc;
+
+precision highp float;
+
+float val_min3(float a, float b, float c) { return min(min(a, b), c); }
+float val_max3(float a, float b, float c) { return max(max(a, b), c); }
+float val_max4(float a, float b, float c, float d) { return max(max(max(a, b), c), d); }
+
+vec4 largest(vec4 mc, vec4 lightest, vec4 a, vec4 b, vec4 c, float str) {
+    vec4 abc = mix(mc, (a + b + c) * (1.0 / 3.0), str);
+    return abc.a > lightest.a ? abc : lightest;
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= int(pc.size.x) || p.y >= int(pc.size.y)) return;
+
+    ivec2 max_p = ivec2(int(pc.size.x) - 1, int(pc.size.y) - 1);
+
+    vec4 mc = texelFetch(src, p, 0);
+    vec4 tl = texelFetch(src, clamp(p + ivec2(-1, -1), ivec2(0), max_p), 0);
+    vec4 tc = texelFetch(src, clamp(p + ivec2( 0, -1), ivec2(0), max_p), 0);
+    vec4 tr = texelFetch(src, clamp(p + ivec2( 1, -1), ivec2(0), max_p), 0);
+    vec4 ml = texelFetch(src, clamp(p + ivec2(-1,  0), ivec2(0), max_p), 0);
+    vec4 mr = texelFetch(src, clamp(p + ivec2( 1,  0), ivec2(0), max_p), 0);
+    vec4 bl = texelFetch(src, clamp(p + ivec2(-1,  1), ivec2(0), max_p), 0);
+    vec4 bc = texelFetch(src, clamp(p + ivec2( 0,  1), ivec2(0), max_p), 0);
+    vec4 br = texelFetch(src, clamp(p + ivec2( 1,  1), ivec2(0), max_p), 0);
+
+    vec4 lightest = mc;
+    float push_str = clamp(pc.size.z * 0.45, 0.0, 0.5);
+
+    // Kernel 0 and 4: Vertical
+    if (val_min3(tl.a, tc.a, tr.a) > val_max4(mc.a, br.a, bc.a, bl.a))
+        lightest = largest(mc, lightest, tl, tc, tr, push_str);
+    else if (val_min3(br.a, bc.a, bl.a) > val_max4(mc.a, tl.a, tc.a, tr.a))
+        lightest = largest(mc, lightest, br, bc, bl, push_str);
+
+    // Kernel 1 and 5: Diagonal TR-BL
+    if (val_min3(mr.a, tc.a, tr.a) > val_max3(mc.a, ml.a, bc.a))
+        lightest = largest(mc, lightest, mr, tc, tr, push_str);
+    else if (val_min3(bl.a, ml.a, bc.a) > val_max3(mc.a, mr.a, tc.a))
+        lightest = largest(mc, lightest, bl, ml, bc, push_str);
+
+    // Kernel 2 and 6: Horizontal
+    if (val_min3(mr.a, br.a, tr.a) > val_max4(mc.a, ml.a, tl.a, bl.a))
+        lightest = largest(mc, lightest, mr, br, tr, push_str);
+    else if (val_min3(ml.a, tl.a, bl.a) > val_max4(mc.a, mr.a, br.a, tr.a))
+        lightest = largest(mc, lightest, ml, tl, bl, push_str);
+
+    // Kernel 3 and 7: Diagonal BR-TL
+    if (val_min3(mr.a, br.a, bc.a) > val_max3(mc.a, ml.a, tc.a))
+        lightest = largest(mc, lightest, mr, br, bc, push_str);
+    else if (val_min3(tc.a, ml.a, tl.a) > val_max3(mc.a, mr.a, bc.a))
+        lightest = largest(mc, lightest, tc, ml, tl, push_str);
+
+    // Directional Sobel gradient for line detection
+    vec2 grad = vec2(
+        (tr.a + 2.0 * mr.a + br.a) - (tl.a + 2.0 * ml.a + bl.a),
+        (bl.a + 2.0 * bc.a + br.a) - (tl.a + 2.0 * tc.a + tr.a)
+    );
+    float g_len = length(grad);
+    vec4 out_color;
+    if (g_len > 0.04) {
+        out_color = mix(mc, lightest, clamp(pc.size.z, 0.0, 1.0));
+    } else {
+        out_color = lightest;
+    }
+
+    imageStore(dst, p, vec4(out_color.rgb, 1.0));
+}

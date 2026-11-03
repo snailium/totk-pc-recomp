@@ -58,9 +58,9 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                   "that size. Above 100 % smooths jagged edges (supersampling) at a high GPU cost.",
     [UI_MENU_RENDER_SCALE_GAME] = "Game (83 %)",
     [UI_MENU_UPSCALER] = "Scaling to the window",
-    [UI_MENU_UPSCALER_DESC] = "How the picture is scaled when the window is larger than the game resolution. FSR keeps "
+    [UI_MENU_UPSCALER_DESC] = "How the picture is scaled when the window is larger than the game resolution. FSR and Anime4K keep "
                               "edges and detail sharper than bilinear.",
-    [UI_MENU_UPSCALER_FSR] = "AMD FSR 1", [UI_MENU_UPSCALER_BILINEAR] = "Bilinear",
+    [UI_MENU_UPSCALER_FSR] = "AMD FSR 1", [UI_MENU_UPSCALER_ANIME4K] = "Anime4K", [UI_MENU_UPSCALER_BILINEAR] = "Bilinear",
     [UI_MENU_SHARPNESS] = "FSR sharpness",
     [UI_MENU_SHARPNESS_DESC] = "Sharpening after FSR scaling; 0 turns it off.",
 
@@ -276,9 +276,9 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                   "Выше 100 % сглаживает лесенки на краях (суперсэмплинг) ценой большой нагрузки на GPU.",
     [UI_MENU_RENDER_SCALE_GAME] = "Как в игре (83 %)",
     [UI_MENU_UPSCALER] = "Масштабирование под окно",
-    [UI_MENU_UPSCALER_DESC] = "Как картинка растягивается, когда окно больше разрешения игры. FSR сохраняет края и "
+    [UI_MENU_UPSCALER_DESC] = "Как картинка растягивается, когда окно больше разрешения игры. FSR и Anime4K сохраняют края и "
                               "детали чётче билинейного.",
-    [UI_MENU_UPSCALER_FSR] = "AMD FSR 1", [UI_MENU_UPSCALER_BILINEAR] = "Билинейное",
+    [UI_MENU_UPSCALER_FSR] = "AMD FSR 1", [UI_MENU_UPSCALER_ANIME4K] = "Anime4K", [UI_MENU_UPSCALER_BILINEAR] = "Билинейное",
     [UI_MENU_SHARPNESS] = "Резкость FSR",
     [UI_MENU_SHARPNESS_DESC] = "Повышение резкости после масштабирования FSR; 0 выключает его.",
 
@@ -501,8 +501,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_RENDER_SCALE_DESC] = "3D 场景相对于游戏分辨率的缩放比例；超过 100% 可获得超采样平滑效果。",
     [UI_MENU_RENDER_SCALE_GAME] = "游戏默认 (83%)",
     [UI_MENU_UPSCALER] = "窗口拉伸算法",
-    [UI_MENU_UPSCALER_DESC] = "窗口大于游戏分辨率时的画面缩放算法。",
-    [UI_MENU_UPSCALER_FSR] = "AMD FSR 1", [UI_MENU_UPSCALER_BILINEAR] = "双线性过滤",
+    [UI_MENU_UPSCALER_DESC] = "窗口大于游戏分辨率时的画面缩放算法。FSR 与 Anime4K 比双线性过滤更清晰。",
+    [UI_MENU_UPSCALER_FSR] = "AMD FSR 1", [UI_MENU_UPSCALER_ANIME4K] = "Anime4K", [UI_MENU_UPSCALER_BILINEAR] = "双线性过滤",
     [UI_MENU_SHARPNESS] = "FSR 锐化强度",
     [UI_MENU_SHARPNESS_DESC] = "FSR 缩放后的锐化滤镜强度；0 为关闭锐化。",
 
