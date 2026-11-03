@@ -218,14 +218,23 @@ int vk_present_prepare(VkImage *out_dst_img, uint32_t *out_idx, VkSemaphore *out
     if (!g_started) gfx_window_start();
     VkCtx *c = vk_ctx();
     if (!g_started) return 0;
+    uint64_t wp_0 = waitstat_now();
     gfx_pump_events();
+    waitstat_add("present pump", waitstat_now() - wp_0);
+    uint64_t wl0 = waitstat_now();
     plat_mutex_lock(&g_pl);
+    waitstat_add("present lock", waitstat_now() - wl0);
     if (g_dirty && !create_swapchain()) {
         plat_mutex_unlock(&g_pl);
         return 0;
     }
+    uint64_t wf0 = waitstat_now();
+    vkWaitForFences(c->device, 1, &g_fence[g_frame], VK_TRUE, UINT64_MAX);
+    waitstat_add("blit fence", waitstat_now() - wf0);
     uint32_t idx = 0;
+    uint64_t wa0 = waitstat_now();
     VkResult r = vkAcquireNextImageKHR(c->device, g_sc, UINT64_MAX, g_acquire[g_frame], VK_NULL_HANDLE, &idx);
+    waitstat_add("acquire image", waitstat_now() - wa0);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         n_blit_ood++;
         create_swapchain();
@@ -237,7 +246,6 @@ int vk_present_prepare(VkImage *out_dst_img, uint32_t *out_idx, VkSemaphore *out
         plat_mutex_unlock(&g_pl);
         return 0;
     }
-    vkWaitForFences(c->device, 1, &g_fence[g_frame], VK_TRUE, UINT64_MAX);
     vkResetFences(c->device, 1, &g_fence[g_frame]);
 
     if (out_dst_img) *out_dst_img = g_sc_img[idx];
@@ -251,9 +259,60 @@ int vk_present_prepare(VkImage *out_dst_img, uint32_t *out_idx, VkSemaphore *out
 void vk_present_commit(uint32_t idx) {
     g_flip_on = 1;
     g_flip_idx = idx;
+    g_frame = (g_frame + 1) % MAX_FRAMES;
     n_blit_ok++;
     plat_mutex_unlock(&g_pl);
     present_stats();
+}
+
+int vk_present_record_blit(VkCommandBuffer cb, VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4], uint32_t *out_idx, VkSemaphore *out_acquire, VkSemaphore *out_render_done, VkFence *out_fence) {
+    if (!vk_present_prepare(NULL, out_idx, out_acquire, out_render_done, out_fence)) return 0;
+    uint32_t idx = *out_idx;
+    if (!cb) cb = g_cb[g_frame];
+    if (cb == g_cb[g_frame]) {
+        vkResetCommandBuffer(cb, 0);
+        VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                       .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+        vkBeginCommandBuffer(cb, &bi);
+    }
+    VkImageLayout src_layout = layout;
+    image_barrier(cb, src, src_layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+                  VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    image_barrier(cb, g_sc_img[idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    VkImageBlit blit = {0};
+    int cx = 0, cy = 0, cw = w, ch = h;
+    if (crop) { cx = crop[0]; cy = crop[1]; cw = crop[2]; ch = crop[3]; }
+    if (cw <= 0) cw = w;
+    if (ch <= 0) ch = h;
+    blit.srcSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.srcOffsets[0] = (VkOffset3D){cx, cy, 0};
+    blit.srcOffsets[1] = (VkOffset3D){cx + cw, cy + ch, 1};
+    blit.dstSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.dstOffsets[0] = (VkOffset3D){0, 0, 0};
+    blit.dstOffsets[1] = (VkOffset3D){(int32_t)g_sc_ext.width, (int32_t)g_sc_ext.height, 1};
+    static int logged_fmt_rec;
+    if (!logged_fmt_rec++) rt_log("gfx: merged blit %dx%d format %d -> swapchain %ux%u format %d", w, h, (int)fmt, g_sc_ext.width,
+                                  g_sc_ext.height, (int)g_sc_fmt);
+    vkCmdBlitImage(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_sc_img[idx],
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+    image_barrier(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, src_layout,
+                  VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                  VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT);
+    image_barrier(cb, g_sc_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_2_NONE, 0);
+    if (cb == g_cb[g_frame]) {
+        vkEndCommandBuffer(cb);
+    }
+    return 1;
+}
+
+VkCommandBuffer vk_present_get_cb(void) {
+    if (!g_started) gfx_window_start();
+    if (!g_started) return VK_NULL_HANDLE;
+    return g_cb[g_frame];
 }
 
 void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]) {
@@ -408,6 +467,7 @@ skip_dump:
     vk_queue_unlock();
     g_flip_on = 1;
     g_flip_idx = idx;
+    g_frame = (g_frame + 1) % MAX_FRAMES;
     n_blit_ok++;
     plat_mutex_unlock(&g_pl);
     present_stats();
@@ -444,16 +504,25 @@ static void gfx_pump_events(void) {
 void vk_present_flip(void) {
     if (!g_started) return;
     gfx_pump_events();   // per frame: pings, focus, quit
-    if (!g_flip_on) { n_flip_skip++; present_stats(); return; }
+    plat_mutex_lock(&g_pl);
+    if (!g_flip_on) {
+        plat_mutex_unlock(&g_pl);
+        n_flip_skip++;
+        present_stats();
+        return;
+    }
+    uint32_t flip_idx = g_flip_idx;
+    g_flip_on = 0;
+    plat_mutex_unlock(&g_pl);
     static unsigned long long presents, last_log;
     uint64_t t = (uint64_t)(plat_now_ns() / 1000000);
     VkCtx *c = vk_ctx();
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
                            .waitSemaphoreCount = 1,
-                           .pWaitSemaphores = &g_render_done[g_flip_idx],
+                           .pWaitSemaphores = &g_render_done[flip_idx],
                            .swapchainCount = 1,
                            .pSwapchains = &g_sc,
-                           .pImageIndices = &g_flip_idx};
+                           .pImageIndices = &flip_idx};
     vk_queue_lock();
     uint64_t wp0 = waitstat_now();
     VkResult r = vkQueuePresentKHR(c->gfx_queue, &pi);
@@ -469,11 +538,10 @@ void vk_present_flip(void) {
     if (presents - last_log >= 120) {
         static uint64_t t0;
         if (!t0) t0 = t;
-        if (t > t0) rt_logf("gfx: %llu presents, %.1f fps\n", presents, (double)presents * 1000.0 / (double)(t - t0));
+        if (t > t0) rt_logf("gfx: %llu presents, %.1f fps\n", presents, (double)(presents - last_log) * 1000.0 / (double)(t - t0));
+        t0 = t;
         last_log = presents;
     }
-    g_flip_on = 0;
-    g_frame = (g_frame + 1) % MAX_FRAMES;
 }
 
 void vk_present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]) {

@@ -1170,7 +1170,10 @@ void *VirtualAlloc(void *addr, SIZE_T size, DWORD type, DWORD prot) {
     if (type & MEM_COMMIT) p = prot_of(prot);
     // Committing inside a reservation: the pages are already mapped PROT_NONE and anonymous, so mprotect is the
     // whole operation (Windows' MEM_COMMIT has exactly that meaning for a reserved range).
-    if (addr && (type & MEM_COMMIT) && !(type & MEM_RESERVE) && mprotect(addr, n, p) == 0) return addr;
+    if (addr && (type & MEM_COMMIT) && !(type & MEM_RESERVE) && mprotect(addr, n, p) == 0) {
+        waitstat_add("vm commit mprotect", n);
+        return addr;
+    }
     if (addr) flags |= MAP_FIXED_NOREPLACE;
     void *m = mmap(addr, n, p, flags, -1, 0);
     if (m == MAP_FAILED) { SetLastError(errno == EEXIST ? ERROR_ALREADY_EXISTS : errno); return NULL; }
@@ -1189,12 +1192,14 @@ BOOL VirtualFree(void *addr, SIZE_T size, DWORD type) {
             g_watch[i].size = 0;
         }
         pthread_mutex_unlock(&g_watch_lock);
+        waitstat_add("vm release munmap", page_up(size));
         return munmap(addr, page_up(size)) == 0;
     }
     if (type & MEM_DECOMMIT) {
         // Decommit means the content is gone: a later commit must read zeros, as Windows guarantees. MADV_DONTNEED
         // discards the anonymous pages, so the next touch faults in fresh zero pages.
         size_t n = page_up(size);
+        waitstat_add("vm decommit", n);
         madvise(addr, n, MADV_DONTNEED);
         return mprotect(addr, n, PROT_NONE) == 0;
     }
@@ -1203,6 +1208,7 @@ BOOL VirtualFree(void *addr, SIZE_T size, DWORD type) {
 
 BOOL VirtualProtect(void *addr, SIZE_T size, DWORD prot, DWORD *old) {
     if (old) *old = PAGE_READWRITE;
+    waitstat_add("vm protect", page_up(size));
     return mprotect(addr, page_up(size), prot_of(prot)) == 0;
 }
 

@@ -33,12 +33,12 @@ void kern_svc_dump(void);   // kernel.c
 
 #define WEAK __attribute__((weak))
 
-typedef struct { VkImage image; VkFormat format; int w, h, has_crop, crop[4]; uint64_t frame, at, queued, value; } PresentJob;
+typedef struct { VkImage image; VkFormat format; int w, h, has_crop, crop[4]; uint64_t frame, at, queued, value; int blit_submitted; } PresentJob;
 
 static SRWLOCK pl = SRWLOCK_INIT;
 static CONDITION_VARIABLE pcv = CONDITION_VARIABLE_INIT;   // job queued, job taken, job submitted
 static PresentJob job;
-static int pending, busy, present_thread;
+static int pending, busy, present_thread, pending_blit;
 
 // Sleeps on a high-resolution timer to 1 ms before at, then yields until at: the timer alone wakes up to ~0.5 ms late.
 static void wait_until(HANDLE timer, uint64_t at) {
@@ -59,28 +59,31 @@ static DWORD WINAPI present_main(void *arg) {
         while (!pending) SleepConditionVariableSRW(&pcv, &pl, INFINITE, 0);
         PresentJob j = job;
         pending = 0;
-        busy = 1;
+        pending_blit = 0;
+        busy = !j.blit_submitted;
         WakeAllConditionVariable(&pcv);
         ReleaseSRWLockExclusive(&pl);
         if (flight_on) vk_thumbs_frame(j.frame);
-        uint64_t jb0 = waitstat_now();
-        uint64_t bt0 = waitstat_now();
-        vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
-        waitstat_add("blit total", waitstat_now() - bt0);
-        // Only the asynchronous replay queues timeline values through the present; in synchronous mode an empty submit
-        // just to advance the timeline costs a kernel submission (about 10 ms on the BC-250) per frame and orders
-        // nothing: deferred destruction only has to happen later, never earlier.
-        if (j.value) {
-            uint64_t f = vk_sync_submit(NULL, 0);   // a timeline value after the blit
-            if (f != j.value)
-                rt_fatal("vk: the present of frame %llu signalled %llu, queued as %llu", (unsigned long long)j.frame,
-                         (unsigned long long)f, (unsigned long long)j.value);
+        if (!j.blit_submitted) {
+            uint64_t jb0 = waitstat_now();
+            uint64_t bt0 = waitstat_now();
+            vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
+            waitstat_add("blit total", waitstat_now() - bt0);
+            // Only the asynchronous replay queues timeline values through the present; in synchronous mode an empty submit
+            // just to advance the timeline costs a kernel submission (about 10 ms on the BC-250) per frame and orders
+            // nothing: deferred destruction only has to happen later, never earlier.
+            if (j.value) {
+                uint64_t f = vk_sync_submit(NULL, 0);   // a timeline value after the blit
+                if (f != j.value)
+                    rt_fatal("vk: the present of frame %llu signalled %llu, queued as %llu", (unsigned long long)j.frame,
+                             (unsigned long long)f, (unsigned long long)j.value);
+            }
+            waitstat_add("present job", waitstat_now() - jb0);
+            AcquireSRWLockExclusive(&pl);
+            busy = 0;
+            WakeAllConditionVariable(&pcv);
+            ReleaseSRWLockExclusive(&pl);
         }
-        waitstat_add("present job", waitstat_now() - jb0);
-        AcquireSRWLockExclusive(&pl);
-        busy = 0;
-        WakeAllConditionVariable(&pcv);
-        ReleaseSRWLockExclusive(&pl);
         uint64_t t0 = kern_now_ns();
         wait_until(timer, j.at);
         waitstat_add("present pacing", kern_now_ns() - t0);
@@ -106,21 +109,30 @@ void vk_present_drain(void) {
     uint64_t w0 = waitstat_now();
     AcquireSRWLockExclusive(&pl);
     double t0 = (double)kern_now_ns();
-    while (pending || busy) {
+    while (pending_blit || busy) {
         // A stuck drain is a deadlock: the present thread never clears the flag, and every later submission waits here.
         DWORD ms = 2000;
         SleepConditionVariableSRW(&pcv, &pl, ms, 0);
-        if ((pending || busy) && (double)kern_now_ns() - t0 > 2e9) {
+        if ((pending_blit || busy) && (double)kern_now_ns() - t0 > 2e9) {
             static volatile long once;
             if (!InterlockedExchange(&once, 1))
-                rt_log("vk: present drain stuck for two seconds: pending %d, busy %d (no present thread can clear it)",
-                       pending, busy);
+                rt_log("vk: present drain stuck for two seconds: pending_blit %d, busy %d (no present thread can clear it)",
+                       pending_blit, busy);
             t0 = (double)kern_now_ns();
         }
     }
     ReleaseSRWLockExclusive(&pl);
     perf_end(PERF_DRAIN, p0);
     waitstat_add("present drain", waitstat_now() - w0);
+}
+
+static int merge_blit_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("TOTK_MERGE_BLIT");
+        on = !e || strcmp(e, "0") != 0;
+    }
+    return on;
 }
 
 // The present after the frame count: resolves the image and hands the blit to the present thread. queued: when the game
@@ -134,6 +146,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
     __atomic_store_n(&gfx_counters.validation_errors, (uint64_t)vk_validation_errors_total(), __ATOMIC_RELAXED);
     const VkTexImage *img = vk_texture_get(t);
     if (!img || !(img->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) {
+        vk_sync_flush();
         if (InterlockedIncrement(&n_skipped) <= 8)
             rt_log("vk: present of texture %p (format %#x) skipped: no colour image", (const void *)t, t ? t->d.format : 0);
         if (value) {   // the queued value is still signalled, in order
@@ -150,6 +163,30 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
         for (int i = 0; i < 4; i++) j.crop[i] = crop[i];
     }
     vk_upload_flush(0);   // an upload vk_texture_get just recorded goes before the blit
+    if (!flight_on && !j.value && merge_blit_on()) {
+        VkCommandBuffer blit_cb = vk_present_get_cb();
+        uint32_t sc_idx = 0;
+        VkSemaphore acq_sem = VK_NULL_HANDLE, rdone_sem = VK_NULL_HANDLE;
+        VkFence blit_fence = VK_NULL_HANDLE;
+        if (blit_cb && vk_present_record_blit(blit_cb, j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h,
+                                              j.has_crop ? j.crop : NULL, &sc_idx, &acq_sem, &rdone_sem, &blit_fence)) {
+            VkSemaphoreSubmitInfo wait_info = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                               .semaphore = acq_sem,
+                                               .stageMask = VK_PIPELINE_STAGE_2_BLIT_BIT};
+            VkCommandBufferSubmitInfo cb_info = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+                                                 .commandBuffer = blit_cb};
+            VkSemaphoreSubmitInfo sig_info = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+                                              .semaphore = rdone_sem,
+                                              .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+            vk_sync_flush_ext(1, &wait_info, 1, &cb_info, 1, &sig_info, blit_fence);
+            vk_present_commit(sc_idx);
+            j.blit_submitted = 1;
+        } else {
+            vk_sync_flush();
+        }
+    } else {
+        vk_sync_flush();
+    }
     AcquireSRWLockExclusive(&pl);
     if (!present_thread) {
         HANDLE h = CreateThread(NULL, 0, present_main, NULL, 0, NULL);
@@ -162,6 +199,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
     waitstat_add("present enqueue wait", waitstat_now() - we0);
     job = j;
     pending = 1;
+    pending_blit = !j.blit_submitted;
     WakeAllConditionVariable(&pcv);
     ReleaseSRWLockExclusive(&pl);
     if (rdoc_active()) { vk_present_drain(); rdoc_after_present(frame); }
@@ -219,6 +257,8 @@ static uint64_t submit_sync(const uint64_t *handles, int n) {
     vk_sync_start();
     vk_present_drain();
     vk_texture_new_submit();
+    if (!flight_on && !gfx_replay_async() && merge_blit_on())
+        return vk_sync_defer_submit(handles, n);
     return vk_sync_submit(handles, n);
 }
 
@@ -388,10 +428,11 @@ static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
 WEAK void vk_program_release(const prog_t *p) { (void)p; }
 
 static int vk_be_pool_init(pool_t *p) { vk_sync_start(); return vk_pool_init(p); }
-static void vk_be_pool_fini(pool_t *p) { vk_sync_start(); replay_drain(DR_POOL_FINI); vk_present_drain(); vk_pool_fini(p); }
+static void vk_be_pool_fini(pool_t *p) { vk_sync_start(); replay_drain(DR_POOL_FINI); vk_sync_flush(); vk_present_drain(); vk_pool_fini(p); }
 static int vk_be_pool_map_virtual(pool_t *v, int n, const void *requests) {
     vk_sync_start();
     replay_drain(DR_MAP_VIRTUAL);
+    vk_sync_flush();
     vk_present_drain();
     return vk_pool_map_virtual(v, n, requests);
 }
@@ -403,6 +444,7 @@ static void vk_be_sampler_register(int id, const samp_par *s) { vk_sync_start();
 static void vk_be_texture_release(const tex_t *t) {
     vk_sync_start();
     if (!gfx_replay_async()) {
+        vk_sync_flush();
         vk_present_drain();
         vk_texture_release(t);
         return;
@@ -451,6 +493,7 @@ static void vk_be_read_texels(const tex_t *t, const view_t *v, const NVNcopyRegi
                               uint64_t img) {
     vk_sync_start();
     if (!gfx_replay_async()) {
+        vk_sync_flush();
         vk_read_texels(t, v, r, dst, row, img);
         return;
     }
@@ -502,6 +545,7 @@ static void vk_be_write_texels(const tex_t *t, const view_t *v, const NVNcopyReg
                                uint64_t img) {
     vk_sync_start();
     replay_drain(DR_WRITE_TEXELS);
+    vk_sync_flush();
     vk_present_drain();
     vk_write_texels(t, v, r, src, row, img);
 }
@@ -529,16 +573,21 @@ static void vk_be_guest_read(uint64_t addr, uint64_t size) {
             ReleaseSRWLockExclusive(&rl);
         }
     }
+    vk_sync_flush();
     vk_present_drain();
     vk_texture_write_back(addr, size);
 }
 // After a fence wait: the value is done, so its replay is too; a later submission the replay records meanwhile marks
 // its targets with a later fence, which write_back_small leaves alone. No drain.
 static void vk_be_cpu_synced(uint64_t fence) {
-    if (!vk_texture_small_dirty()) return;
+    if (!fence || !vk_texture_small_dirty()) return;
+    const char *e = getenv("TOTK_WB_SMALL");
+    if (e && !strcmp(e, "0")) return;
+    uint64_t w0 = waitstat_now();
     vk_sync_start();
     vk_present_drain();
     vk_texture_write_back_small(fence);
+    waitstat_add("cpu synced wb", waitstat_now() - w0);
 }
 
 const GfxBackend gfx_vulkan_backend = {

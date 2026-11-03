@@ -893,6 +893,22 @@ void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int
     present_image(src, layout, fmt, w, h, crop, 1);
 }
 
+int vk_present_record_blit(VkCommandBuffer cb, VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h,
+                           const int crop[4], uint32_t *out_idx, VkSemaphore *out_acquire,
+                           VkSemaphore *out_render_done, VkFence *out_fence) {
+    (void)cb; (void)src; (void)layout; (void)fmt; (void)w; (void)h; (void)crop;
+    (void)out_idx; (void)out_acquire; (void)out_render_done; (void)out_fence;
+    return 0;
+}
+
+VkCommandBuffer vk_present_get_cb(void) {
+    return VK_NULL_HANDLE;
+}
+
+void vk_present_commit(uint32_t idx) {
+    (void)idx;
+}
+
 void vk_present_flip(void) {
     EnterCriticalSection(&g_pl);
     flip_locked();

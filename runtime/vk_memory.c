@@ -71,6 +71,7 @@ typedef struct PoolRec {
     uint32_t mgen;                     // gen_lock: every page write stamped up to this generation is in the mirror
                                        // (or in a copy queued before its next use)
     uint64_t fl_lo, fl_hi;             // flush_lock: nvnMemoryPoolFlushMappedRange bytes not copied yet (fl_hi 0: none)
+    uint8_t import_tried;              // POOL_IMPORT: 1 if import_pool has been attempted
 } PoolRec;
 
 static void mirror_forget(PoolRec *r);   // pool_lock exclusive: off the mirrored list
@@ -239,9 +240,19 @@ static void destroy_rec(VkCtx *c, PoolRec *r) {
     free(r);
 }
 
+static int lazy_pool_import(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = cfg_get("TOTK_LAZY_POOL_IMPORT");
+        on = !e || !*e || strcmp(e, "0");
+    }
+    return on;
+}
+
 int vk_pool_init(pool_t *p) {
     VkCtx *c = vk_ctx();
     if (!c) { rt_log("vk: MemoryPoolInitialize before vk_init"); return 0; }
+    waitstat_add("vk_pool_init", p->size);
     // The GPU never sees a GPU_NO_ACCESS pool, except a physical one (0x189; 1.4.3 also 0x18c, CPU-visible) through the
     // virtual pools that map it. Either gets device-local memory: 1.4.3's CPU never writes its 0x18c pool's storage
     // (unchanged over 3600 frames of the intro), so the guest storage and the GPU copy need no sync.
@@ -263,15 +274,24 @@ int vk_pool_init(pool_t *p) {
         ok = alloc_physical(c, r);
     } else {
         r->kind = POOL_IMPORT;
-        mem_thaw((uintptr_t)p->mem, p->size);   // the import may need write access to the pages
-        ok = import_pool(c, r, (uintptr_t)p->mem, p->size);
-        if (!ok) {
-            // Not fatal for the game: the pool works for the CPU, and vk_mem_resolve reports its addresses as unbacked.
-            long n = InterlockedIncrement(&n_import_failures);
-            if (n <= 8) rt_log("vk: pool %p (flags %#x, %#llx bytes) has no GPU buffer (%ld so far)", (void *)p->mem,
-                               p->flags, (unsigned long long)p->size, n);
+        uint64_t al = c->min_imported_host_alignment ? c->min_imported_host_alignment : 0x1000;
+        r->import_lo = (uintptr_t)p->mem & ~(al - 1);
+        r->import_hi = ((uintptr_t)p->mem + p->size + al - 1) & ~(al - 1);
+        if (lazy_pool_import()) {
             r->buf = VK_NULL_HANDLE;
+            r->mem = VK_NULL_HANDLE;
             ok = 1;
+        } else {
+            mem_thaw((uintptr_t)p->mem, p->size);   // the import may need write access to the pages
+            ok = import_pool(c, r, (uintptr_t)p->mem, p->size);
+            if (!ok) {
+                // Not fatal for the game: the pool works for the CPU, and vk_mem_resolve reports its addresses as unbacked.
+                long n = InterlockedIncrement(&n_import_failures);
+                if (n <= 8) rt_log("vk: pool %p (flags %#x, %#llx bytes) has no GPU buffer (%ld so far)", (void *)p->mem,
+                                   p->flags, (unsigned long long)p->size, n);
+                r->buf = VK_NULL_HANDLE;
+                ok = 1;
+            }
         }
     }
     if (!ok) { free(r->pt); free(r); return 0; }
@@ -292,6 +312,7 @@ int vk_pool_init(pool_t *p) {
 void vk_pool_fini(pool_t *p) {
     VkCtx *c = vk_ctx();
     if (!c) return;
+    waitstat_add("vk_pool_fini", p->size);
     pidx_ent e;
     AcquireSRWLockExclusive(&pool_lock);
     int had = pidx_remove(&pool_index, p, &e);
@@ -310,7 +331,7 @@ void vk_pool_fini(pool_t *p) {
     }
     ReleaseSRWLockExclusive(&pool_lock);
     if (!r) return;
-    if (r->kind == POOL_IMPORT) mem_thaw(r->lo, r->size);   // the storage goes back to the guest writable
+    if (r->kind == POOL_IMPORT && r->buf) mem_thaw(r->lo, r->size);   // the storage goes back to the guest writable
     // Images cut from this range go first; a used buffer or memory waits until the GPU is done with it, since the
     // guest gets the storage back when this returns.
     vk_texture_range_gone(r->lo, r->size, r->alloc);
@@ -406,9 +427,31 @@ int vk_mem_resolve(uint64_t addr, uint64_t size, VkMemSpan *out) {
 // The pool index lookup under the lock; a non-overlapped import or physical pool goes into the address's cache slot.
 static int resolve_locked(uint64_t addr, uint64_t size, VkMemSpan *out) {
     memset(out, 0, sizeof *out);
+    int exclusive = 0;
     AcquireSRWLockShared(&pool_lock);
     const pidx_ent *e = pidx_find(&pool_index, (uintptr_t)addr, size);
     PoolRec *r = e ? e->buf : NULL;
+    if (r && r->kind == POOL_IMPORT && !r->buf && !r->import_tried) {
+        ReleaseSRWLockShared(&pool_lock);
+        AcquireSRWLockExclusive(&pool_lock);
+        exclusive = 1;
+        e = pidx_find(&pool_index, (uintptr_t)addr, size);
+        r = e ? e->buf : NULL;
+        if (r && r->kind == POOL_IMPORT && !r->buf && !r->import_tried) {
+            r->import_tried = 1;
+            VkCtx *c = vk_ctx();
+            mem_thaw(r->lo, r->size);
+            if (import_pool(c, r, r->lo, r->size)) {
+                __atomic_add_fetch(&pool_gen, 1, __ATOMIC_RELEASE);
+            } else {
+                long n = InterlockedIncrement(&n_import_failures);
+                if (n <= 8) rt_log("vk: lazy pool %p (flags %#x, %#llx bytes) import failed (%ld so far)",
+                                   (void *)r->lo, r->flags, (unsigned long long)r->size, n);
+            }
+            e = pidx_find(&pool_index, (uintptr_t)addr, size);
+            r = e ? e->buf : NULL;
+        }
+    }
     int ok = 0;
     if (r && (r->kind == POOL_IMPORT ? r->buf != VK_NULL_HANDLE : r->kind == POOL_PHYS)) {
         int i = (int)(e - pool_index.e);
@@ -450,7 +493,8 @@ static int resolve_locked(uint64_t addr, uint64_t size, VkMemSpan *out) {
         }
     }
     if (ok && !r->used) InterlockedExchange(&r->used, 1);
-    ReleaseSRWLockShared(&pool_lock);
+    if (exclusive) ReleaseSRWLockExclusive(&pool_lock);
+    else ReleaseSRWLockShared(&pool_lock);
     if (!ok) memset(out, 0, sizeof *out);
     return ok;
 }
@@ -513,9 +557,14 @@ void vk_mem_census(uint64_t frame) {
     Group g[64];
     int ng = 0;
     uint64_t total[4] = {0}, count[4] = {0};
+    uint64_t imp_active_cnt = 0, imp_active_bytes = 0;
     AcquireSRWLockShared(&pool_lock);
     for (int i = 0; i < pool_index.n; i++) {
         const PoolRec *r = pool_index.e[i].buf;
+        if (r->kind == POOL_IMPORT && r->buf) {
+            imp_active_cnt++;
+            imp_active_bytes += r->size;
+        }
         int j = 0;
         while (j < ng && (g[j].kind != r->kind || g[j].flags != r->flags)) j++;
         if (j == ng && ng < 64) g[ng++] = (Group){r->kind, r->flags, 0, 0};
@@ -523,9 +572,10 @@ void vk_mem_census(uint64_t frame) {
         total[r->kind] += r->size, count[r->kind]++;
     }
     ReleaseSRWLockShared(&pool_lock);
-    rt_log("mem: census at frame %llu: import %llu pools %.1f MiB (%ld without a GPU buffer), physical %llu pools %.1f MiB, "
+    rt_log("mem: census at frame %llu: import %llu pools %.1f MiB (active %llu, %.1f MiB, %ld failures), physical %llu pools %.1f MiB, "
            "virtual %llu pools %.1f MiB of address space",
            (unsigned long long)frame, (unsigned long long)count[POOL_IMPORT], total[POOL_IMPORT] / 1048576.0,
+           (unsigned long long)imp_active_cnt, imp_active_bytes / 1048576.0,
            n_import_failures, (unsigned long long)count[POOL_PHYS], total[POOL_PHYS] / 1048576.0,
            (unsigned long long)count[POOL_VIRT], total[POOL_VIRT] / 1048576.0);
     static const char *const kinds[] = {"", "import", "physical", "virtual"};
@@ -1776,7 +1826,9 @@ uint64_t vk_upload_flush(int wait) {
         vkEndCommandBuffer(open_b.cb);
         VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &open_b.cb};
         vk_queue_lock();
+        uint64_t us0 = waitstat_now();
         VkResult r = vkQueueSubmit(c->gfx_queue, 1, &si, open_b.fence);
+        waitstat_add("upload submit ioctl", waitstat_now() - us0);
         vk_queue_unlock();
         if (r != VK_SUCCESS) rt_fatal("vk: upload submit failed (%d)", (int)r);
         if (ninflight == cap_inflight) grow((void **)&inflight, &cap_inflight, sizeof *inflight);
@@ -1784,10 +1836,12 @@ uint64_t vk_upload_flush(int wait) {
         open_active = 0;
     }
     if (c && wait) {
+        uint64_t uw0 = waitstat_now();
         while (ninflight && done_seq < seq) {
             vkWaitForFences(c->device, 1, &inflight[0].fence, VK_TRUE, UINT64_MAX);
             retire(c, 0);
         }
+        waitstat_add("upload wait fence", waitstat_now() - uw0);
     }
     if (c) collect_locked(c);
     LeaveCriticalSection(&cmd_lock);

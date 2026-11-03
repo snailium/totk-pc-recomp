@@ -36,6 +36,7 @@ static struct {
 
 static void VKAPI_PTR on_allocate(VmaAllocator a, uint32_t type, VkDeviceMemory m, VkDeviceSize size, void *user) {
     (void)a, (void)m, (void)size, (void)user;
+    waitstat_add("vma device alloc", size);
     if (!H.on || type >= 64) return;
     if (GetCurrentThreadId() == H.tid) {
         InterlockedIncrement64(&H.made);
@@ -46,10 +47,15 @@ static void VKAPI_PTR on_allocate(VmaAllocator a, uint32_t type, VkDeviceMemory 
     SetEvent(H.ev);
 }
 
+static void VKAPI_PTR on_free(VmaAllocator a, uint32_t type, VkDeviceMemory m, VkDeviceSize size, void *user) {
+    (void)a, (void)type, (void)m, (void)user;
+    waitstat_add("vma device free", size);
+}
+
 const VmaDeviceMemoryCallbacks *vk_headroom_callbacks(void) {
-    static const VmaDeviceMemoryCallbacks cb = {.pfnAllocate = on_allocate};
+    static const VmaDeviceMemoryCallbacks cb = {.pfnAllocate = on_allocate, .pfnFree = on_free};
     H.on = !cfg_get("TOTK_VRAM_HEADROOM") || cfg_bool("TOTK_VRAM_HEADROOM");
-    return H.on ? &cb : NULL;
+    return &cb;
 }
 
 static VkDeviceSize block_size(const VkCtx *c, uint32_t type) {
