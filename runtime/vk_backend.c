@@ -587,8 +587,7 @@ static void vk_be_guest_read(uint64_t addr, uint64_t size) {
 // its targets with a later fence, which write_back_small leaves alone. No drain.
 static void vk_be_cpu_synced(uint64_t fence) {
     if (!fence || !vk_texture_small_dirty()) return;
-    const char *e = getenv("TOTK_WB_SMALL");
-    if (e && !strcmp(e, "0")) return;
+    if (!cfg_bool("TOTK_WB_SMALL")) return;
     uint64_t w0 = waitstat_now();
     vk_sync_start();
     vk_present_drain();

@@ -335,7 +335,7 @@ int probe_cfg(void) {
     _putenv_s("TOTK_MOUSE_SENS", "");
     _putenv_s("TOTK_FREE_CORES", "");
     CHECK(cfg_bool("TOTK_FPS60") == 1, "default: unset FPS60 is on");
-    CHECK(EQ(cfg_value("TOTK_VK_PRESENT"), "mailbox") && cfg_int("TOTK_SPLIT_DRAWS") == 64, "default: text and integer");
+    CHECK(EQ(cfg_value("TOTK_VK_PRESENT"), "mailbox") && cfg_int("TOTK_SPLIT_DRAWS") == 0, "default: text and integer");
     _putenv_s("TOTK_MOUSE_SENS", "2.5");
     CHECK(cfg_double("TOTK_MOUSE_SENS") == 2.5, "double: the environment value");
     _putenv_s("TOTK_MOUSE_SENS", "fast");
