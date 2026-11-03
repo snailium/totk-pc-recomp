@@ -47,8 +47,8 @@ static int g_focused = 1;
 // SDL's video and Vulkan loader must be up before any thread asks SDL a question: the prewarm thread calls vk_init
 // before the main thread reaches gfx_window_start. A constructor runs on the main thread before main().
 __attribute__((constructor)) static void sdl_early_init(void) {
-    if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
-        fprintf(stderr, "gfx: SDL_Init(SDL_INIT_VIDEO) failed: %s\n", SDL_GetError());
+    if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
+        fprintf(stderr, "gfx: SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD) failed: %s\n", SDL_GetError());
         return;
     }
     if (!SDL_Vulkan_LoadLibrary(NULL)) fprintf(stderr, "gfx: SDL_Vulkan_LoadLibrary failed: %s\n", SDL_GetError());
