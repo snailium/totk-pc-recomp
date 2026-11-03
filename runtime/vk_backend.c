@@ -56,7 +56,13 @@ static DWORD WINAPI present_main(void *arg) {
     uint64_t last = 0, last_queued = 0;
     AcquireSRWLockExclusive(&pl);
     for (;;) {
-        while (!pending) SleepConditionVariableSRW(&pcv, &pl, INFINITE, 0);
+        while (!pending) {
+            if (!SleepConditionVariableSRW(&pcv, &pl, 50, 0)) {
+                ReleaseSRWLockExclusive(&pl);
+                gfx_window_poll();
+                AcquireSRWLockExclusive(&pl);
+            }
+        }
         PresentJob j = job;
         pending = 0;
         pending_blit = 0;

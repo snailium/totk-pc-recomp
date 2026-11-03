@@ -177,6 +177,7 @@ uint64_t gfx_vsync_time_ns(uint64_t tick) { return (uint64_t)g_vs_start_ns + tic
 
 // ---- focus
 int gfx_window_focused(void) { return g_focused; }
+void gfx_window_poll(void) {}
 unsigned gfx_window_focus_messages(void) { return (unsigned)g_focus_msgs; }
 HWND gfx_window_handle(void) { return g_hwnd; }
 

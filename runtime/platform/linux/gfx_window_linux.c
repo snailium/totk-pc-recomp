@@ -501,6 +501,10 @@ static void gfx_pump_events(void) {
     }
 }
 
+void gfx_window_poll(void) {
+    if (g_started) gfx_pump_events();
+}
+
 void vk_present_flip(void) {
     if (!g_started) return;
     gfx_pump_events();   // per frame: pings, focus, quit

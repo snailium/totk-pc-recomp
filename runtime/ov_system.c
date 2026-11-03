@@ -171,7 +171,7 @@ static int assume_focus(void) {
     LONG a = v;
     if (a < 0) {
         const char *e = cfg_get("TOTK_ASSUME_FOCUS");
-        a = e && atoi(e) ? 1 : 0;
+        a = e ? (atoi(e) != 0) : 1;
         InterlockedExchange(&v, a);
     }
     return (int)a;
