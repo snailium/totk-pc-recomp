@@ -381,12 +381,12 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
                         .pCommandBufferInfos = pro ? cbi : cbi + 1, .signalSemaphoreInfoCount = 1,
                         .pSignalSemaphoreInfos = &sig};
     if (sublog()) rt_log("vk: submit %llu: queue lock", (unsigned long long)fence);
-    uint64_t ws0 = waitstat_now();
     vk_queue_lock();
+    uint64_t ws0 = waitstat_now();
     if (sublog()) rt_log("vk: submit %llu: vkQueueSubmit2", (unsigned long long)fence);
     VkResult r = vkQueueSubmit2(c->gfx_queue, 1, &si, VK_NULL_HANDLE);
-    vk_queue_unlock();
     waitstat_add("submit2 ioctl", waitstat_now() - ws0);
+    vk_queue_unlock();
     if (sublog()) rt_log("vk: submit %llu: returned %d", (unsigned long long)fence, (int)r);
     if (r != VK_SUCCESS) rt_fatal("vk: vkQueueSubmit2 of value %llu failed (%d)", (unsigned long long)fence, (int)r);
     s->fence = recorded ? fence : 0;
@@ -432,7 +432,14 @@ int vk_sync_fence_wait(uint64_t value, uint64_t timeout_ns) {
     uint64_t p0 = perf_begin();
     uint64_t w0 = waitstat_now();
     int ok = fence_wait_impl(value, timeout_ns);
-    waitstat_add("gpu timeline fence", waitstat_now() - w0);
+    uint64_t dt = waitstat_now() - w0;
+    waitstat_add("gpu timeline fence", dt);
+    if (dt > 10000000ull) { // > 10ms
+        static int logged;
+        if (logged++ < 50) {
+            rt_log("fence_wait: fence %llu waited %.2f ms", (unsigned long long)value, dt / 1e6);
+        }
+    }
     perf_end(PERF_FENCE, p0);
     perf_gpu_wait(p0);
     return ok;

@@ -58,7 +58,11 @@ __attribute__((constructor)) static void sdl_early_init(void) {
 
 static PlatMutex g_ql;
 
-void vk_queue_lock(void) { plat_mutex_lock(&g_ql); }
+void vk_queue_lock(void) {
+    uint64_t t0 = waitstat_now();
+    plat_mutex_lock(&g_ql);
+    waitstat_add("vk_queue_lock wait", waitstat_now() - t0);
+}
 void vk_queue_unlock(void) { plat_mutex_unlock(&g_ql); }
 
 // ---- window
@@ -119,6 +123,11 @@ static int create_swapchain(void) {
     vk_queue_lock();
     vkDeviceWaitIdle(c->device);
     VkSwapchainKHR old = g_sc;
+    VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;
+    const char *pm_env = getenv("TOTK_PRESENT_MODE");
+    if (pm_env && !strcmp(pm_env, "mailbox")) mode = VK_PRESENT_MODE_MAILBOX_KHR;
+    else if (pm_env && !strcmp(pm_env, "immediate")) mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+
     VkSwapchainCreateInfoKHR ci = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
         .surface = g_surface,
@@ -132,7 +141,7 @@ static int create_swapchain(void) {
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .preTransform = caps.currentTransform,
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-        .presentMode = VK_PRESENT_MODE_FIFO_KHR,
+        .presentMode = mode,
         .clipped = VK_TRUE,
         .oldSwapchain = old,
     };
@@ -203,6 +212,48 @@ static void present_stats(void) {
     next = n_blit_ok + n_blit_ood + n_blit_fail + 120;
     rt_log("gfx: presents: blit ok %llu, out-of-date %llu, dropped %llu; flips %llu, skipped %llu", n_blit_ok, n_blit_ood,
            n_blit_fail, n_flip_ok, n_flip_skip);
+}
+
+int vk_present_prepare(VkImage *out_dst_img, uint32_t *out_idx, VkSemaphore *out_acquire, VkSemaphore *out_render_done, VkFence *out_fence) {
+    if (!g_started) gfx_window_start();
+    VkCtx *c = vk_ctx();
+    if (!g_started) return 0;
+    gfx_pump_events();
+    plat_mutex_lock(&g_pl);
+    if (g_dirty && !create_swapchain()) {
+        plat_mutex_unlock(&g_pl);
+        return 0;
+    }
+    uint32_t idx = 0;
+    VkResult r = vkAcquireNextImageKHR(c->device, g_sc, UINT64_MAX, g_acquire[g_frame], VK_NULL_HANDLE, &idx);
+    if (r == VK_ERROR_OUT_OF_DATE_KHR) {
+        n_blit_ood++;
+        create_swapchain();
+        plat_mutex_unlock(&g_pl);
+        return 0;
+    }
+    if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) {
+        n_blit_fail++;
+        plat_mutex_unlock(&g_pl);
+        return 0;
+    }
+    vkWaitForFences(c->device, 1, &g_fence[g_frame], VK_TRUE, UINT64_MAX);
+    vkResetFences(c->device, 1, &g_fence[g_frame]);
+
+    if (out_dst_img) *out_dst_img = g_sc_img[idx];
+    if (out_idx) *out_idx = idx;
+    if (out_acquire) *out_acquire = g_acquire[g_frame];
+    if (out_render_done) *out_render_done = g_render_done[idx];
+    if (out_fence) *out_fence = g_fence[g_frame];
+    return 1;
+}
+
+void vk_present_commit(uint32_t idx) {
+    g_flip_on = 1;
+    g_flip_idx = idx;
+    n_blit_ok++;
+    plat_mutex_unlock(&g_pl);
+    present_stats();
 }
 
 void vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]) {
@@ -337,7 +388,7 @@ skip_dump:
                   VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                   VK_PIPELINE_STAGE_2_NONE, 0);
     vkEndCommandBuffer(g_cb[g_frame]);
-    VkPipelineStageFlags wait = VK_PIPELINE_STAGE_2_BLIT_BIT;
+    VkPipelineStageFlags wait = VK_PIPELINE_STAGE_TRANSFER_BIT;
     VkSubmitInfo submit = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
                            .waitSemaphoreCount = 1,
                            .pWaitSemaphores = &g_acquire[g_frame],
@@ -346,15 +397,15 @@ skip_dump:
                            .pCommandBuffers = &g_cb[g_frame],
                            .signalSemaphoreCount = 1,
                            .pSignalSemaphores = &g_render_done[idx]};
-    uint64_t wb0 = waitstat_now();
     vk_queue_lock();
+    uint64_t wb0 = waitstat_now();
     if (vkQueueSubmit(c->gfx_queue, 1, &submit, g_fence[g_frame]) != VK_SUCCESS) {
         vk_queue_unlock();
         plat_mutex_unlock(&g_pl);
         return;
     }
+    waitstat_add("blit vkQueueSubmit", waitstat_now() - wb0);
     vk_queue_unlock();
-    waitstat_add("blit submit", waitstat_now() - wb0);
     g_flip_on = 1;
     g_flip_idx = idx;
     n_blit_ok++;

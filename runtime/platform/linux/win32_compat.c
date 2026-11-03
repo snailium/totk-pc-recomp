@@ -1528,7 +1528,7 @@ DWORD WaitForSingleObject(HANDLE h, DWORD ms) {
     uint64_t w0 = kern_now_ns();
     DWORD wr = wait_for_single(h, kind, ms);
     waitstat_add(kind == K_THREAD ? "wait thread" : kind == K_PROCESS ? "wait process" : kind == K_EVENT ? "wait event"
-                                                                                                   : "wait object",
+                 : kind == K_TIMER ? "wait timer" : "wait object",
                  kern_now_ns() - w0);
     return wr;
 }
@@ -1586,7 +1586,7 @@ static DWORD wait_for_single(HANDLE h, int kind, DWORD ms) {
         while (t->armed) {
             uint64_t now = mono_ns();
             if (now >= t->due) { t->armed = 0; break; }
-            struct timespec ts = {(time_t)((t->due - now) / 1000000000u), (long)((t->due - now) % 1000000000u)};
+            struct timespec ts = {(time_t)(t->due / 1000000000ull), (long)(t->due % 1000000000ull)};
             pthread_cond_timedwait(&t->c, &t->m, &ts);
         }
         pthread_mutex_unlock(&t->m);

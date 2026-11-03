@@ -9,7 +9,7 @@
 
 #include "host.h"
 
-enum { WS_MAX = 24 };
+enum { WS_MAX = 64 };
 static struct { const char *name; uint64_t calls, ns; } g_ws[WS_MAX];
 static int g_ws_n;
 static int g_ws_on = -1;
