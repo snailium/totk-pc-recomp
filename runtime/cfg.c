@@ -113,7 +113,7 @@ static const CfgMeta metas[] = {
     // disable are the parts that keep the game moving.
     {"ASYNC_PREEMPT", "2", "0|1|2", RESTART},
 #endif
-    {"REPLAY_ASYNC", "0", "0|1", RESTART},
+    {"REPLAY_ASYNC", "1", "0|1", RESTART},
     {"FREE_CORES", "0", "0|1", RESTART}, {"TIMER_1MS", "1", "0|1", RESTART},
     // shaders and pipelines
     {"PIPE_WAIT", "default", "default|draw", RESTART}, {"PIPE_SKIP", "fullscreen", "strict|any|fullscreen", RESTART},
