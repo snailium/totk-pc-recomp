@@ -397,11 +397,17 @@ const char *plat_ui_language(void) {
 
 // System fonts for the menu's language names. fontconfig would be the general answer; the catalogue only needs CJK, and
 // every distribution that ships it installs these files.
-static const char *const cjk_fonts_ja[] = {"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+static const char *const cjk_fonts_ja[] = {"/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Regular.ttc",
+                                           "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+                                           "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
                                            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", NULL};
-static const char *const cjk_fonts_ko[] = {"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+static const char *const cjk_fonts_ko[] = {"/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Regular.ttc",
+                                           "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+                                           "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
                                            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", NULL};
-static const char *const cjk_fonts_zh[] = {"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+static const char *const cjk_fonts_zh[] = {"/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Regular.ttc",
+                                           "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+                                           "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
                                            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
                                            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", NULL};
 
@@ -542,6 +548,10 @@ struct PlatLoad {
     uint64_t last_ns;               // when the counters were last read
     char gpu_busy[PATH_MAX];        // /sys/class/drm/cardN/device/gpu_busy_percent, "" when the driver has none
     char gpu_vram[PATH_MAX];        // .../mem_info_vram_used
+    char gpu_temp[PATH_MAX];        // .../hwmon/hwmonM/temp1_input
+    char drm_fdinfo[PATH_MAX];      // /proc/self/fdinfo/XX
+    uint64_t last_drm_engine_ns;
+    uint64_t last_drm_real_ns;
     long hz;
 };
 
@@ -550,25 +560,69 @@ struct PlatLoad {
 // adapter needs no matching at all, which is the case on both targets.
 static void find_gpu_sysfs(PlatLoad *l) {
     DIR *d = opendir("/sys/class/drm");
-    if (!d) return;
-    struct dirent *e;
-    while ((e = readdir(d))) {
-        if (strncmp(e->d_name, "card", 4)) continue;
-        int digits = 1;
-        for (const char *p = e->d_name + 4; *p; p++)
-            if (*p < '0' || *p > '9') digits = 0;
-        if (!digits) continue;   // cardN-DP-1 and friends are connectors, not the device
-        char base[300];
-        snprintf(base, sizeof base, "/sys/class/drm/%s/device", e->d_name);
-        char busy[340], vram[340];
-        snprintf(busy, sizeof busy, "%s/gpu_busy_percent", base);
-        snprintf(vram, sizeof vram, "%s/mem_info_vram_used", base);
-        if (access(busy, R_OK)) continue;
-        snprintf(l->gpu_busy, sizeof l->gpu_busy, "%s", busy);
-        if (!access(vram, R_OK)) snprintf(l->gpu_vram, sizeof l->gpu_vram, "%s", vram);
-        break;
+    if (d) {
+        struct dirent *e;
+        while ((e = readdir(d))) {
+            if (strncmp(e->d_name, "card", 4)) continue;
+            int digits = 1;
+            for (const char *p = e->d_name + 4; *p; p++)
+                if (*p < '0' || *p > '9') digits = 0;
+            if (!digits) continue;   // cardN-DP-1 and friends are connectors, not the device
+            char base[300];
+            snprintf(base, sizeof base, "/sys/class/drm/%s/device", e->d_name);
+            char busy[340], vram[340];
+            snprintf(busy, sizeof busy, "%s/gpu_busy_percent", base);
+            snprintf(vram, sizeof vram, "%s/mem_info_vram_used", base);
+            if (!access(busy, R_OK)) snprintf(l->gpu_busy, sizeof l->gpu_busy, "%s", busy);
+            if (!access(vram, R_OK)) snprintf(l->gpu_vram, sizeof l->gpu_vram, "%s", vram);
+            // Search hwmon for GPU temperature
+            char hwmon_base[340];
+            snprintf(hwmon_base, sizeof hwmon_base, "%s/hwmon", base);
+            DIR *hd = opendir(hwmon_base);
+            if (hd) {
+                struct dirent *he;
+                while ((he = readdir(hd))) {
+                    if (strncmp(he->d_name, "hwmon", 5)) continue;
+                    char temp_p[400];
+                    snprintf(temp_p, sizeof temp_p, "%s/%s/temp1_input", hwmon_base, he->d_name);
+                    if (!access(temp_p, R_OK)) {
+                        snprintf(l->gpu_temp, sizeof l->gpu_temp, "%s", temp_p);
+                        break;
+                    }
+                }
+                closedir(hd);
+            }
+            if (l->gpu_busy[0] || l->gpu_vram[0] || l->gpu_temp[0]) break;
+        }
+        closedir(d);
     }
-    closedir(d);
+    // Search /proc/self/fdinfo for DRM client engine time
+    DIR *fdd = opendir("/proc/self/fdinfo");
+    if (fdd) {
+        struct dirent *fe;
+        while ((fe = readdir(fdd))) {
+            if (fe->d_name[0] == '.') continue;
+            char path[300];
+            snprintf(path, sizeof path, "/proc/self/fdinfo/%s", fe->d_name);
+            FILE *fp = fopen(path, "r");
+            if (fp) {
+                char line[128];
+                int has_drm = 0;
+                while (fgets(line, sizeof line, fp)) {
+                    if (strstr(line, "drm-engine-gfx:")) {
+                        has_drm = 1;
+                        break;
+                    }
+                }
+                fclose(fp);
+                if (has_drm) {
+                    snprintf(l->drm_fdinfo, sizeof l->drm_fdinfo, "%s", path);
+                    break;
+                }
+            }
+        }
+        closedir(fdd);
+    }
 }
 
 PlatLoad *plat_load_open(const uint8_t *gpu_luid) {
@@ -661,6 +715,29 @@ void plat_cpu_load(PlatLoad *l, float *total_pct, float *proc_pct, float *temp_c
         float c = (float)milli / 1000.0f;
         if (c > hottest) hottest = c;
     }
+    if (hottest < 0) {
+        for (int i = 0; i < 8; i++) {
+            char name_path[64], name[64] = {0};
+            snprintf(name_path, sizeof name_path, "/sys/class/hwmon/hwmon%d/name", i);
+            int fd = open(name_path, O_RDONLY | O_CLOEXEC);
+            if (fd >= 0) {
+                ssize_t nr = read(fd, name, sizeof(name) - 1);
+                close(fd);
+                if (nr > 0) name[nr] = 0;
+            }
+            if (strstr(name, "k10temp") || strstr(name, "coretemp") || strstr(name, "zenpower") || strstr(name, "nct6686")) {
+                for (int t = 1; t <= 4; t++) {
+                    char temp_path[64];
+                    snprintf(temp_path, sizeof temp_path, "/sys/class/hwmon/hwmon%d/temp%d_input", i, t);
+                    uint64_t milli;
+                    if (read_u64(temp_path, &milli) && milli > 0 && milli < 150000) {
+                        float c = (float)milli / 1000.0f;
+                        if (c > hottest) hottest = c;
+                    }
+                }
+            }
+        }
+    }
     if (hottest >= 0 && temp_c) *temp_c = hottest;
 }
 
@@ -668,8 +745,45 @@ void plat_gpu_load(PlatLoad *l, float *load_pct, float *vram_used_mb) {
     if (load_pct) *load_pct = -1;
     if (vram_used_mb) *vram_used_mb = -1;
     uint64_t v;
-    if (l->gpu_busy[0] && read_u64(l->gpu_busy, &v) && load_pct) *load_pct = (float)v;
-    if (l->gpu_vram[0] && read_u64(l->gpu_vram, &v) && vram_used_mb) *vram_used_mb = (float)v / (1024.0f * 1024.0f);
+    int got_load = 0;
+    if (l->gpu_busy[0] && read_u64(l->gpu_busy, &v) && load_pct) {
+        *load_pct = (float)v;
+        got_load = 1;
+    }
+    if (!got_load && l->drm_fdinfo[0] && load_pct) {
+        FILE *fp = fopen(l->drm_fdinfo, "r");
+        if (fp) {
+            char line[128];
+            uint64_t gfx_ns = 0;
+            while (fgets(line, sizeof line, fp)) {
+                if (sscanf(line, "drm-engine-gfx:\t%llu ns", (unsigned long long *)&gfx_ns) == 1 ||
+                    sscanf(line, "drm-engine-gfx: %llu ns", (unsigned long long *)&gfx_ns) == 1) {
+                    break;
+                }
+            }
+            fclose(fp);
+            uint64_t now = plat_now_ns();
+            if (l->last_drm_real_ns && now > l->last_drm_real_ns && gfx_ns >= l->last_drm_engine_ns) {
+                uint64_t dt = now - l->last_drm_real_ns;
+                uint64_t dg = gfx_ns - l->last_drm_engine_ns;
+                float pct = (float)(100.0 * (double)dg / (double)dt);
+                *load_pct = pct > 100.0f ? 100.0f : pct;
+            }
+            l->last_drm_engine_ns = gfx_ns;
+            l->last_drm_real_ns = now;
+        }
+    }
+    if (l->gpu_vram[0] && read_u64(l->gpu_vram, &v) && vram_used_mb) {
+        *vram_used_mb = (float)v / (1024.0f * 1024.0f);
+    }
+}
+
+void plat_gpu_temp(PlatLoad *l, float *temp_c) {
+    if (temp_c) *temp_c = -1;
+    uint64_t v;
+    if (l && l->gpu_temp[0] && read_u64(l->gpu_temp, &v) && temp_c) {
+        *temp_c = (float)v / 1000.0f;
+    }
 }
 
 static void meminfo_line(const char *key, float *out_mb) {

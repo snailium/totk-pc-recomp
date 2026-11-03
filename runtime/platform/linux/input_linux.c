@@ -16,9 +16,6 @@
 #include "platform.h"
 #include "ui/menu.h"
 
-__attribute__((weak)) int menu_is_open(void) { return 0; }
-__attribute__((weak)) void menu_toggle(void) {}
-
 enum {
     STICK_MAX = 32767,
     STICK_DEAD = 2500,

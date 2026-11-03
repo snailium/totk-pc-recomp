@@ -16,7 +16,9 @@
 #include "cfg.h"
 #include "gfx.h"
 #include "host.h"
+#include "nvn_api.h"
 #include "platform.h"
+#include "ui/menu.h"
 #include "vk.h"
 
 #define MAX_SC_IMAGES 8
@@ -300,9 +302,55 @@ int vk_present_record_blit(VkCommandBuffer cb, VkImage src, VkImageLayout layout
     image_barrier(cb, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, src_layout,
                   VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
                   VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT);
-    image_barrier(cb, g_sc_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                  VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                  VK_PIPELINE_STAGE_2_NONE, 0);
+
+    VkCtx *c = vk_ctx();
+    const char *menu_shot = NULL;
+    MenuTarget mt = {
+        .instance = c->instance,
+        .phys = c->phys,
+        .device = c->device,
+        .queue_family = c->gfx_family,
+        .queue = c->gfx_queue,
+        .format = g_sc_fmt,
+        .width = g_sc_ext.width,
+        .height = g_sc_ext.height,
+        .image_w = w,
+        .image_h = h,
+        .scaler = 0
+    };
+    int overlay = g_sc_view[idx] &&
+                  menu_overlay_frame(__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), &mt, &menu_shot);
+
+    if (overlay) {
+        image_barrier(cb, g_sc_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
+                      VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                      VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+        VkRenderingAttachmentInfo ca = {
+            .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            .imageView = g_sc_view[idx],
+            .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE
+        };
+        VkRenderingInfo ri = {
+            .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+            .renderArea = {{0, 0}, g_sc_ext},
+            .layerCount = 1,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &ca
+        };
+        vkCmdBeginRendering(cb, &ri);
+        menu_overlay_draw(cb);
+        vkCmdEndRendering(cb);
+        image_barrier(cb, g_sc_img[idx], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                      VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
+    } else {
+        image_barrier(cb, g_sc_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_BLIT_BIT,
+                      VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
+    }
     if (cb == g_cb[g_frame]) {
         vkEndCommandBuffer(cb);
     }
@@ -443,9 +491,54 @@ skip_dump:
     } else
     vkCmdBlitImage(g_cb[g_frame], src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_sc_img[idx],
                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
-    image_barrier(g_cb[g_frame], g_sc_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                  VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                  VK_PIPELINE_STAGE_2_NONE, 0);
+
+    const char *menu_shot = NULL;
+    MenuTarget mt = {
+        .instance = c->instance,
+        .phys = c->phys,
+        .device = c->device,
+        .queue_family = c->gfx_family,
+        .queue = c->gfx_queue,
+        .format = g_sc_fmt,
+        .width = g_sc_ext.width,
+        .height = g_sc_ext.height,
+        .image_w = w,
+        .image_h = h,
+        .scaler = 0
+    };
+    int overlay = g_sc_view[idx] &&
+                  menu_overlay_frame(__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), &mt, &menu_shot);
+
+    if (overlay) {
+        image_barrier(g_cb[g_frame], g_sc_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
+                      VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                      VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+        VkRenderingAttachmentInfo ca = {
+            .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            .imageView = g_sc_view[idx],
+            .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE
+        };
+        VkRenderingInfo ri = {
+            .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+            .renderArea = {{0, 0}, g_sc_ext},
+            .layerCount = 1,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &ca
+        };
+        vkCmdBeginRendering(g_cb[g_frame], &ri);
+        menu_overlay_draw(g_cb[g_frame]);
+        vkCmdEndRendering(g_cb[g_frame]);
+        image_barrier(g_cb[g_frame], g_sc_img[idx], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                      VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
+    } else {
+        image_barrier(g_cb[g_frame], g_sc_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_2_BLIT_BIT,
+                      VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
+    }
     vkEndCommandBuffer(g_cb[g_frame]);
     VkPipelineStageFlags wait = VK_PIPELINE_STAGE_TRANSFER_BIT;
     VkSubmitInfo submit = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -473,6 +566,70 @@ skip_dump:
     present_stats();
 }
 
+enum {
+    IMGUI_KEY_NONE = 0,
+    IMGUI_KEY_TAB = 512,
+    IMGUI_KEY_LEFT = 513,
+    IMGUI_KEY_RIGHT = 514,
+    IMGUI_KEY_UP = 515,
+    IMGUI_KEY_DOWN = 516,
+    IMGUI_KEY_PAGE_UP = 517,
+    IMGUI_KEY_PAGE_DOWN = 518,
+    IMGUI_KEY_HOME = 519,
+    IMGUI_KEY_END = 520,
+    IMGUI_KEY_INSERT = 521,
+    IMGUI_KEY_DELETE = 522,
+    IMGUI_KEY_BACKSPACE = 523,
+    IMGUI_KEY_SPACE = 524,
+    IMGUI_KEY_ENTER = 525,
+    IMGUI_KEY_ESCAPE = 526,
+    IMGUI_KEY_LEFT_CTRL = 527,
+    IMGUI_KEY_LEFT_SHIFT = 528,
+    IMGUI_KEY_LEFT_ALT = 529,
+    IMGUI_KEY_RIGHT_CTRL = 531,
+    IMGUI_KEY_RIGHT_SHIFT = 532,
+    IMGUI_KEY_RIGHT_ALT = 533,
+    IMGUI_KEY_0 = 536,
+    IMGUI_KEY_A = 546,
+    IMGUI_KEY_E = 550,
+    IMGUI_KEY_Q = 562,
+};
+
+static int sdl_to_imgui_key(SDL_Scancode sc) {
+    switch (sc) {
+    case SDL_SCANCODE_TAB: return IMGUI_KEY_TAB;
+    case SDL_SCANCODE_LEFT: return IMGUI_KEY_LEFT;
+    case SDL_SCANCODE_RIGHT: return IMGUI_KEY_RIGHT;
+    case SDL_SCANCODE_UP: return IMGUI_KEY_UP;
+    case SDL_SCANCODE_DOWN: return IMGUI_KEY_DOWN;
+    case SDL_SCANCODE_PAGEUP: return IMGUI_KEY_PAGE_UP;
+    case SDL_SCANCODE_PAGEDOWN: return IMGUI_KEY_PAGE_DOWN;
+    case SDL_SCANCODE_HOME: return IMGUI_KEY_HOME;
+    case SDL_SCANCODE_END: return IMGUI_KEY_END;
+    case SDL_SCANCODE_INSERT: return IMGUI_KEY_INSERT;
+    case SDL_SCANCODE_DELETE: return IMGUI_KEY_DELETE;
+    case SDL_SCANCODE_BACKSPACE: return IMGUI_KEY_BACKSPACE;
+    case SDL_SCANCODE_SPACE: return IMGUI_KEY_SPACE;
+    case SDL_SCANCODE_RETURN: return IMGUI_KEY_ENTER;
+    case SDL_SCANCODE_ESCAPE: return IMGUI_KEY_ESCAPE;
+    case SDL_SCANCODE_LCTRL: return IMGUI_KEY_LEFT_CTRL;
+    case SDL_SCANCODE_LSHIFT: return IMGUI_KEY_LEFT_SHIFT;
+    case SDL_SCANCODE_LALT: return IMGUI_KEY_LEFT_ALT;
+    case SDL_SCANCODE_RCTRL: return IMGUI_KEY_RIGHT_CTRL;
+    case SDL_SCANCODE_RSHIFT: return IMGUI_KEY_RIGHT_SHIFT;
+    case SDL_SCANCODE_RALT: return IMGUI_KEY_RIGHT_ALT;
+    case SDL_SCANCODE_Q: return IMGUI_KEY_Q;
+    case SDL_SCANCODE_E: return IMGUI_KEY_E;
+    default:
+        if (sc >= SDL_SCANCODE_A && sc <= SDL_SCANCODE_Z)
+            return IMGUI_KEY_A + (sc - SDL_SCANCODE_A);
+        if (sc >= SDL_SCANCODE_1 && sc <= SDL_SCANCODE_9)
+            return IMGUI_KEY_0 + 1 + (sc - SDL_SCANCODE_1);
+        if (sc == SDL_SCANCODE_0) return IMGUI_KEY_0;
+        return IMGUI_KEY_NONE;
+    }
+}
+
 // The window's event loop. SDL answers the compositor's pings from here -- without it KDE marks the window "not
 // responding" -- and the focus messages go to the guest the way the Windows window procedure sends them.
 static void gfx_pump_events(void) {
@@ -490,10 +647,58 @@ static void gfx_pump_events(void) {
         case SDL_EVENT_WINDOW_FOCUS_GAINED:
             oe_set_focus(1);
             oe_push_message(OE_MSG_FOCUS_STATE_CHANGED);
+            menu_event_focus(1);
             break;
         case SDL_EVENT_WINDOW_FOCUS_LOST:
             oe_set_focus(0);
             oe_push_message(OE_MSG_FOCUS_STATE_CHANGED);
+            menu_event_focus(0);
+            break;
+        case SDL_EVENT_KEY_DOWN:
+        case SDL_EVENT_KEY_UP: {
+            SDL_Keycode sym = e.key.key;
+            SDL_Scancode sc = e.key.scancode;
+            int down = (e.type == SDL_EVENT_KEY_DOWN);
+            if (down && !e.key.repeat) {
+                if (sc == SDL_SCANCODE_F1 || sym == SDLK_F1 ||
+                    ((sc == SDL_SCANCODE_ESCAPE || sym == SDLK_ESCAPE) && !menu_is_open())) {
+                    menu_toggle();
+                    break;
+                }
+                if (sc == SDL_SCANCODE_F10 || sym == SDLK_F10) {
+                    menu_perf_cycle();
+                    break;
+                }
+            }
+            if (menu_is_open()) {
+                int k = sdl_to_imgui_key(sc);
+                if (k) menu_event_key(k, down);
+            }
+            break;
+        }
+        case SDL_EVENT_MOUSE_MOTION:
+            if (menu_is_open()) {
+                menu_event_mouse_pos(e.motion.x, e.motion.y);
+            }
+            break;
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        case SDL_EVENT_MOUSE_BUTTON_UP:
+            if (menu_is_open()) {
+                int b = (e.button.button == SDL_BUTTON_LEFT) ? 0 :
+                        (e.button.button == SDL_BUTTON_RIGHT) ? 1 : 2;
+                menu_event_mouse_pos(e.button.x, e.button.y);
+                menu_event_mouse_button(b, e.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
+            }
+            break;
+        case SDL_EVENT_MOUSE_WHEEL:
+            if (menu_is_open()) {
+                menu_event_wheel(e.wheel.x, e.wheel.y);
+            }
+            break;
+        case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+            if (e.gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE) {
+                menu_toggle();
+            }
             break;
         default: break;
         }
@@ -640,7 +845,10 @@ void gfx_window_stop(void) {
     plat_mutex_unlock(&g_pl);
 }
 
-void gfx_window_release_vk(void) { gfx_window_stop(); }
+void gfx_window_release_vk(void) {
+    menu_vk_release();
+    gfx_window_stop();
+}
 
 void gfx_window_resize(int w, int h) {
     if (g_win) SDL_SetWindowSize(g_win, w, h);
@@ -648,7 +856,7 @@ void gfx_window_resize(int w, int h) {
 }
 
 void gfx_window_apply_settings(void) {}
-void gfx_window_request_close(void) {}
+void gfx_window_request_close(void) { exit(0); }
 int gfx_window_monitor_size(int *w, int *h) {
     const SDL_DisplayMode *mode = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
     if (!mode) return 0;

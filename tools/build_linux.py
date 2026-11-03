@@ -118,6 +118,12 @@ def main():
     sources.append((ROOT / 'runtime' / 'platform' / 'linux' / 'input_linux.c', RT_FLAGS))
     sources.append((ROOT / 'runtime' / 'platform' / 'linux' / 'gfx_window_linux.c', RT_FLAGS))
     sources.append((ROOT / 'runtime' / 'vk_vma.cpp', RT_FLAGS))   # VMA is C++: compiled with clang++ below
+    sources.append((ROOT / 'runtime' / 'ui' / 'menu.cpp', RT_FLAGS))
+    sources.append((ROOT / 'runtime' / 'ui' / 'option_rows.cpp', RT_FLAGS))
+    sources.append((ROOT / 'runtime' / 'ui' / 'binds_page.cpp', RT_FLAGS))
+    for f in sorted((ROOT / 'runtime' / 'third_party' / 'imgui').glob('*.cpp')):
+        sources.append((f, RT_FLAGS))
+    sources.append((ROOT / 'runtime' / 'third_party' / 'imgui' / 'backends' / 'imgui_impl_vulkan.cpp', RT_FLAGS))
     sources.append((out / 'modules.c', RT_FLAGS))
     for sub in ('main', 'subsdk0', 'sdk'):
         for f in sorted((gen / sub).glob('*.c')):
@@ -131,7 +137,7 @@ def main():
         if o.exists() and o.stat().st_mtime > f.stat().st_mtime:
             return None
         if f.suffix == '.cpp':
-            cmd = ['clang++', '-std=c++17', '-c', *flags, *INCLUDES, '-I', str(gen), str(f), '-o', str(o)]
+            cmd = ['clang++', '-std=c++20', '-c', *flags, *INCLUDES, '-I', str(gen), '-I', str(out), str(f), '-o', str(o)]
         else:
             cmd = [CC, '-std=gnu11', '-c', *flags, *INCLUDES, '-I', str(gen), '-I', str(out), '-include',
                    str(ROOT / 'runtime' / 'platform' / 'linux' / 'win32_compat.h'), str(f), '-o', str(o)]

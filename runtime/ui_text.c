@@ -470,7 +470,89 @@ SWKBD_ONLY(text_es, "Introducir texto", "Introduce un nombre", "Caballo", "Acept
            "Mando: A = Aceptar, B = Cancelar");
 SWKBD_ONLY(text_nl, "Tekstinvoer", "Voer een naam in", "Paard", "OK", "Annuleren", "Controller: A = OK, B = Annuleren");
 SWKBD_ONLY(text_pt, "Inserir texto", "Introduz um nome", "Cavalo", "OK", "Cancelar", "Comando: A = OK, B = Cancelar");
-SWKBD_ONLY(text_zh_hans, "文字输入", "请输入名字", "马儿", "确定", "取消", "手柄：A 确定，B 取消");
+static const char *const text_zh_hans[UI_TEXT_COUNT] = {
+    SWKBD("文字输入", "请输入名字", "马儿", "确定", "取消", "手柄：A 确定，B 取消"),
+
+    [UI_MENU_TITLE] = "设置",
+    [UI_MENU_TAB_SCREEN] = "画面", [UI_MENU_TAB_GAME] = "游戏", [UI_MENU_TAB_SOUND] = "音频",
+    [UI_MENU_TAB_CONTROLS] = "控制", [UI_MENU_TAB_MENU] = "菜单", [UI_MENU_TAB_ADVANCED] = "高级",
+    [UI_MENU_CONTINUE] = "继续游戏", [UI_MENU_QUIT] = "退出游戏",
+    [UI_MENU_ON] = "开启", [UI_MENU_OFF] = "关闭", [UI_MENU_AUTO] = "自动", [UI_MENU_DEFAULT_MARK] = "默认",
+    [UI_MENU_AFTER_RESTART] = "重启后生效", [UI_MENU_SET_BY_ENV] = "由环境变量固定",
+    [UI_MENU_SAVE_FAILED] = "无法保存设置",
+    [UI_MENU_VERSION] = "TotK Recomp %s, 游戏版本 %s",
+
+    [UI_MENU_FULLSCREEN] = "全屏", [UI_MENU_FULLSCREEN_DESC] = "使游戏填满整个屏幕；按 F11 切换。",
+    [UI_MENU_WINDOW_SIZE] = "窗口大小", [UI_MENU_WINDOW_SIZE_DESC] = "非全屏时的游戏窗口尺寸。",
+    [UI_MENU_WINDOW_SIZE_CUSTOM] = "自定义",
+    [UI_MENU_PRESENT] = "画面提交模式", [UI_MENU_PRESENT_DESC] = "画面渲染帧提交至屏幕的方式。",
+    [UI_MENU_PRESENT_MAILBOX] = "Mailbox (快速无撕裂)", [UI_MENU_PRESENT_VSYNC] = "垂直同步 (VSync)", [UI_MENU_PRESENT_IMMEDIATE] = "立即呈现 (Immediate)",
+    [UI_MENU_PRESENT_IN_USE] = "当前生效: %s",
+    [UI_MENU_GPU] = "显卡设备", [UI_MENU_GPU_DESC] = "用于渲染游戏的 Vulkan 图形设备。",
+    [UI_MENU_GPU_AUTO] = "自动选择",
+    [UI_MENU_PERF_OVERLAY] = "性能监视器 (OSD)",
+    [UI_MENU_PERF_OVERLAY_DESC] = "固定在屏幕右上角三行显示：帧率及历史曲线、CPU/RAM状态、GPU/显存状态。关闭时完全停止后台采样节省资源。按 F10 快速切换。",
+    [UI_MENU_PERF_OFF] = "关闭", [UI_MENU_PERF_FPS] = "仅帧率", [UI_MENU_PERF_FULL] = "完整OSD",
+    [UI_PERF_LINE_FPS] = "%.0f FPS",
+    [UI_MENU_GRAPHICS] = "画面输出",
+    [UI_MENU_OUTPUT_RES] = "游戏分辨率",
+    [UI_MENU_OUTPUT_RES_DESC] = "游戏渲染画面与UI的输出分辨率。高于 1080p 需要更多的显存和算力。",
+    [UI_MENU_RENDER_SCALE] = "3D 渲染缩放",
+    [UI_MENU_RENDER_SCALE_DESC] = "3D 场景相对于游戏分辨率的缩放比例；超过 100% 可获得超采样平滑效果。",
+    [UI_MENU_RENDER_SCALE_GAME] = "游戏默认 (83%)",
+    [UI_MENU_UPSCALER] = "窗口拉伸算法",
+    [UI_MENU_UPSCALER_DESC] = "窗口大于游戏分辨率时的画面缩放算法。",
+    [UI_MENU_UPSCALER_FSR] = "AMD FSR 1", [UI_MENU_UPSCALER_BILINEAR] = "双线性过滤",
+    [UI_MENU_SHARPNESS] = "FSR 锐化强度",
+    [UI_MENU_SHARPNESS_DESC] = "FSR 缩放后的锐化滤镜强度；0 为关闭锐化。",
+
+    [UI_MENU_FPS_LIMIT] = "帧率限制",
+    [UI_MENU_FPS_LIMIT_DESC] = "游戏最高渲染帧率限制。高于 60 帧为实验性功能。",
+    [UI_MENU_FPS_30] = "30 FPS", [UI_MENU_FPS_60] = "60 FPS", [UI_MENU_FPS_120] = "120 FPS", [UI_MENU_FPS_144] = "144 FPS",
+    [UI_MENU_FPS_DISPLAY] = "显示器刷新率", [UI_MENU_FPS_DISPLAY_HZ] = "显示器刷新率 (%.0f Hz)",
+    [UI_MENU_REALTIME] = "游戏速度时间同步",
+    [UI_MENU_REALTIME_DESC] = "游戏物理按真实时间流逝计算，掉帧不会拖慢游戏主进程。",
+    [UI_MENU_CLOTH_REALTIME] = "布料与头发时间同步",
+    [UI_MENU_CLOTH_REALTIME_DESC] = "角色布料与发丝物理按真实时间推进。",
+    [UI_MENU_HIGHFPS_FIX] = "高帧率物理修复",
+    [UI_MENU_HIGHFPS_FIX_DESC] = "修正 30 帧以上时可能出现的物理模拟异常。",
+    [UI_MENU_GAME_LANG] = "游戏语言", [UI_MENU_GAME_LANG_DESC] = "游戏内的文本和语音语言。",
+    [UI_MENU_GAME_LANG_AUTO] = "自动跟随系统",
+    [UI_MENU_OPERATION_MODE] = "运行模式",
+    [UI_MENU_OPERATION_MODE_DESC] = "模拟掌机模式或电视底座模式。",
+    [UI_MENU_MODE_DOCKED] = "电视底座模式", [UI_MENU_MODE_HANDHELD] = "掌机模式",
+
+    [UI_MENU_VOLUME] = "主音量", [UI_MENU_VOLUME_DESC] = "游戏全局音量大小。",
+
+    [UI_MENU_MOTION] = "体感瞄准", [UI_MENU_MOTION_DESC] = "开启后可用手柄内置陀螺仪瞄准。",
+    [UI_MENU_RUMBLE_STRENGTH] = "震动强度",
+    [UI_MENU_RUMBLE_STRENGTH_DESC] = "手柄震动强度的缩放倍率。",
+    [UI_MENU_RUMBLE_CURVE] = "震动曲线",
+    [UI_MENU_RUMBLE_CURVE_DESC] = "较小的值会增强弱震动细节感知。",
+    [UI_MENU_RUMBLE_TRIGGERS] = "扳机震动",
+    [UI_MENU_RUMBLE_TRIGGERS_DESC] = "在支持的手柄上启用扳机马达震动。",
+    [UI_MENU_PAD_LAYOUT] = "手柄按键布局",
+    [UI_MENU_PAD_LAYOUT_DESC] = "确认键位置。Nintendo: 右侧键确认(A在右)；Xbox/PS: 下方键确认(A在下/叉号确认)。",
+    [UI_MENU_PAD_LAYOUT_AUTO] = "自动识别", [UI_MENU_PAD_LAYOUT_NINTENDO] = "Nintendo (右键确认)",
+    [UI_MENU_PAD_LAYOUT_XBOX] = "Xbox / PS (下键确认)", [UI_MENU_PAD_LAYOUT_IN_USE] = "当前布局: %s",
+    [UI_MENU_MOUSE_SENS] = "鼠标视角灵敏度",
+    [UI_MENU_MOUSE_SENS_DESC] = "鼠标转动视角的灵敏度。",
+
+    [UI_MENU_MENU_LANG] = "菜单语言", [UI_MENU_MENU_LANG_DESC] = "设置菜单与界面界面的语言。",
+    [UI_MENU_MENU_LANG_AUTO] = "自动跟随系统",
+
+    [UI_MENU_ADV_WARNING] = "高级调试选项，不熟悉时请保持默认值。",
+    [UI_MENU_GROUP_SCHED] = "调度", [UI_MENU_GROUP_SHADERS] = "着色器与管线",
+    [UI_MENU_GROUP_TEXMEM] = "纹理与内存", [UI_MENU_GROUP_FIXES] = "渲染修正",
+    [UI_MENU_GROUP_VULKAN] = "Vulkan", [UI_MENU_GROUP_DIAG] = "诊断与重置",
+    [UI_MENU_OPEN_LOG] = "打开日志目录", [UI_MENU_OPEN_LOG_DESC] = "在文件管理器中打开日志文件夹。",
+    [UI_MENU_COPY_INFO] = "复制系统信息",
+    [UI_MENU_COPY_INFO_DESC] = "将显卡、驱动、CPU、内存及当前设置复制至剪贴板。",
+    [UI_MENU_COPY_INFO_DONE] = "已复制", [UI_MENU_ACTION_FAILED] = "操作失败",
+    [UI_MENU_RESET] = "重置所有设置", [UI_MENU_RESET_DESC] = "将所有选项恢复为默认设置。",
+    [UI_MENU_RESET_CONFIRM] = "确定要将所有设置恢复为默认值吗？", [UI_MENU_RESET_YES] = "确定重置",
+    [UI_MENU_RESET_NO] = "取消",
+};
 SWKBD_ONLY(text_zh_hant, "文字輸入", "請輸入名字", "馬兒", "確定", "取消", "手把：A 確定，B 取消");
 SWKBD_ONLY(text_ko, "문자 입력", "이름을 입력하세요", "말", "확인", "취소", "컨트롤러: A 확인, B 취소");
 
@@ -508,13 +590,17 @@ const char *ui_text_in(const char *lang, UiTextId id) {
 
 const char *ui_text(UiTextId id) { return ui_text_in(ui_text_lang(ov_language()), id); }
 
-// The menu language, re-read when cfg_version changes. TOTK_MENU_LANG "ru" or "en"; anything else (unset included)
-// follows the system UI language: Russian for "ru", "ru-RU", ..., else English.
+// The menu language, re-read when cfg_version changes.
 static const char *resolve_menu_lang(void) {
     const char *v = cfg_value("TOTK_MENU_LANG");
+    if (v && (!strcmp(v, "zh-Hans") || !strcmp(v, "zh") || !strcmp(v, "zh-CN") || !strcmp(v, "chs"))) return "zh-Hans";
+    if (v && (!strcmp(v, "zh-Hant") || !strcmp(v, "zh-TW") || !strcmp(v, "cht"))) return "zh-Hant";
     if (v && !strcmp(v, "ru")) return "ru";
     if (v && !strcmp(v, "en")) return "en";
+    const char *game_lang = cfg_get("TOTK_LANG");
+    if (game_lang && (!strncmp(game_lang, "zh", 2) || !strcmp(game_lang, "chs") || !strcmp(game_lang, "cht"))) return "zh-Hans";
     const char *sys = plat_ui_language();
+    if (sys && (!strncmp(sys, "zh", 2) || !strcmp(sys, "chs") || !strcmp(sys, "cht"))) return "zh-Hans";
     return sys && (!strcmp(sys, "ru") || !strncmp(sys, "ru-", 3)) ? "ru" : "en";
 }
 

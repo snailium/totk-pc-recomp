@@ -270,7 +270,15 @@ static int fonts_up(float scale) {
         if (!plat_font_path(kCjk[i].lang, path, sizeof path) || !(data[i] = plat_file_read(path, &size))) continue;
         merged++;
         ImFontGlyphRangesBuilder b;
-        b.AddText(ui_text_in("en", kCjk[i].name));
+        if (!strcmp(kCjk[i].lang, "zh-Hans")) {
+            b.AddRanges(fa->GetGlyphRangesChineseSimplifiedCommon());
+            for (int k = 0; k < UI_TEXT_COUNT; k++) {
+                const char *txt = ui_text_in("zh-Hans", (UiTextId)k);
+                if (txt && *txt) b.AddText(txt);
+            }
+        } else {
+            b.AddText(ui_text_in("en", kCjk[i].name));
+        }
         b.BuildRanges(&ranges[i]);
         ImFontConfig mc;
         mc.MergeMode = true;
@@ -520,8 +528,7 @@ static void tab_screen(float scale) {
     static const UiTextId present[] = {UI_MENU_PRESENT_MAILBOX, UI_MENU_PRESENT_VSYNC, UI_MENU_PRESENT_IMMEDIATE};
     opt_choice("TOTK_VK_PRESENT", UI_MENU_PRESENT, present, 3, UI_MENU_PRESENT_DESC, present_note());
     row_gpu();
-    static const UiTextId perf[] = {UI_MENU_PERF_OFF, UI_MENU_PERF_FPS, UI_MENU_PERF_FULL};
-    opt_choice("TOTK_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
+    opt_toggle("TOTK_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, UI_MENU_PERF_OVERLAY_DESC);
     opt_group(UI_MENU_GRAPHICS);
     row_output_res();
     row_render_scale();
@@ -575,8 +582,11 @@ static void tab_controls(float scale) {
 
 static void tab_menu(float scale) {
     opt_begin("##menu", scale);
-    static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU};
-    opt_choice("TOTK_MENU_LANG", UI_MENU_MENU_LANG, langs, 3, UI_MENU_MENU_LANG_DESC);
+    static const UiTextId langs[] = {UI_MENU_MENU_LANG_AUTO, UI_MENU_LANGNAME_ZH_HANS, UI_MENU_LANGNAME_EN, UI_MENU_LANGNAME_RU};
+    static const char *const lang_vals[] = {"", "zh-Hans", "en", "ru"};
+    const char *names[4];
+    for (int i = 0; i < 4; i++) names[i] = menu_text(langs[i]);
+    opt_choice_list("TOTK_MENU_LANG", UI_MENU_MENU_LANG, lang_vals, names, 4, UI_MENU_MENU_LANG_DESC);
     opt_end();
 }
 
@@ -830,11 +840,15 @@ static uint64_t g_perf_last_ns, g_perf_win_ns, g_perf_max_ns;
 static int g_perf_frames;
 static char g_perf_text[96];
 
-static int perf_mode_of(const char *s) { return !strcmp(s, "full") ? 2 : !strcmp(s, "fps") ? 1 : 0; }
+static int perf_mode_of(const char *s) {
+    if (!s || !*s) return 0;
+    if (!strcmp(s, "off") || !strcmp(s, "0")) return 0;
+    return 1;
+}
 
 extern "C" void menu_perf_cycle(void) {
-    static const char *const modes[] = {"off", "fps", "full"};
-    cfg_set("TOTK_PERF_OVERLAY", modes[(perf_mode_of(cfg_value("TOTK_PERF_OVERLAY")) + 1) % 3]);
+    int cur = perf_mode_of(cfg_value("TOTK_PERF_OVERLAY"));
+    cfg_set("TOTK_PERF_OVERLAY", cur ? "off" : "on");
     g_perf_save.store(1);
 }
 
@@ -865,32 +879,17 @@ static void perf_gpu_once(const MenuTarget *t) {
 }
 
 static void perf_tick(uint64_t now, const MenuTarget *t) {
+    (void)now;
     if (cfg_version() != g_perf_ver) {
         g_perf_ver = cfg_version();
         int m = perf_mode_of(cfg_value("TOTK_PERF_OVERLAY"));
         if (m != g_perf_mode) {
             g_perf_last_ns = 0, g_perf_text[0] = 0;
-            if (m == 2) perf_gpu_once(t);
-            perfmon_mode(m);
+            if (m) perf_gpu_once(t);
+            perfmon_mode(m ? 2 : 0);
         }
         g_perf_mode = m;
     }
-    if (g_perf_mode != 1) return;
-    uint64_t d = now - g_perf_last_ns;
-    if (!g_perf_last_ns || d > 2000000000ull) {   // first frame, or a stall the window should not average in
-        g_perf_win_ns = g_perf_max_ns = 0;
-        g_perf_frames = 0;
-    } else {
-        g_perf_win_ns += d;
-        g_perf_frames++;
-        if (d > g_perf_max_ns) g_perf_max_ns = d;
-        if (g_perf_win_ns >= 500000000ull) {
-            snprintf(g_perf_text, sizeof g_perf_text, menu_text(UI_PERF_LINE_FPS), g_perf_frames * 1e9 / g_perf_win_ns);
-            g_perf_win_ns = g_perf_max_ns = 0;
-            g_perf_frames = 0;
-        }
-    }
-    g_perf_last_ns = now;
 }
 
 // The panel keeps its width while the numbers change: every column is as wide as the widest text it can show, measured
@@ -1051,16 +1050,70 @@ static void perf_full_draw(const MenuTarget *t, float scale) {
 }
 
 static void perf_draw(const MenuTarget *t, float scale) {
-    if (g_perf_mode == 2) return perf_full_draw(t, scale);
+    if (!g_perf_mode) return;
+
+    PerfStats s;
+    perfmon_snapshot(&s);
+
     float w = (float)t->width;
-    if (!g_perf_mode || !g_perf_text[0]) return;
-    // with the menu open: under its window, over the dimming layout_menu drew before
-    ImDrawList *dl = g_open.load(std::memory_order_relaxed) ? ImGui::GetBackgroundDrawList() : ImGui::GetForegroundDrawList();
-    ImVec2 sz = ImGui::CalcTextSize(g_perf_text);
-    float pad = 6 * scale;
-    ImVec2 p(w - 12 * scale - sz.x - pad * 2, 12 * scale);   // the top right corner: the game's HUD leaves it empty
-    dl->AddRectFilled(p, ImVec2(p.x + sz.x + pad * 2, p.y + sz.y + pad * 2), IM_COL32(0, 0, 0, 150), 4 * scale);
-    dl->AddText(ImVec2(p.x + pad, p.y + pad), IM_COL32(255, 255, 255, 235), g_perf_text);
+    ImGui::SetNextWindowPos(ImVec2(w - 16 * scale, 16 * scale), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(0.70f);
+
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                             ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
+                             ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoSavedSettings;
+
+    ImGui::Begin("##perf_osd", nullptr, flags);
+    if (g_open.load(std::memory_order_relaxed)) ImGui::BringWindowToDisplayBack(ImGui::GetCurrentWindow());
+    else ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
+
+    ImGui::SetWindowFontScale(0.78f);
+
+    // Line 1: 帧率和帧率历史曲线
+    char fps_txt[32];
+    snprintf(fps_txt, sizeof(fps_txt), "FPS: %.1f", s.fps > 0 ? s.fps : 0.0f);
+    ImVec4 fps_col(0.95f, 0.95f, 0.95f, 1.0f);
+    if (s.fps >= 55.0f) fps_col = ImVec4(0.35f, 0.95f, 0.45f, 1.0f);
+    else if (s.fps >= 28.0f) fps_col = ImVec4(0.95f, 0.85f, 0.35f, 1.0f);
+    else fps_col = ImVec4(0.95f, 0.35f, 0.35f, 1.0f);
+
+    ImGui::TextColored(fps_col, "%s", fps_txt);
+    ImGui::SameLine();
+
+    float fps_curve[PERF_HISTORY];
+    float max_fps = 65.0f;
+    for (int i = 0; i < PERF_HISTORY; i++) {
+        float ms = s.frame_ms[i];
+        fps_curve[i] = ms > 0.1f ? (1000.0f / ms) : 0.0f;
+        if (fps_curve[i] > max_fps) max_fps = fps_curve[i];
+    }
+    ImGui::PlotLines("##fps_curve", fps_curve, PERF_HISTORY, 0, nullptr, 0.0f, max_fps, ImVec2(100.0f * scale, 18.0f * scale));
+
+    // Line 2: CPU占用+温度+内存使用
+    char cpu_txt[64], ram_txt[64];
+    if (s.cpu_temp_c >= 0) snprintf(cpu_txt, sizeof(cpu_txt), "CPU: %.0f%%  %.0f°C", s.cpu_total_pct >= 0 ? s.cpu_total_pct : 0.0f, s.cpu_temp_c);
+    else snprintf(cpu_txt, sizeof(cpu_txt), "CPU: %.0f%%", s.cpu_total_pct >= 0 ? s.cpu_total_pct : 0.0f);
+
+    if (s.ram_total_mb > 0) snprintf(ram_txt, sizeof(ram_txt), "RAM: %.1fG / %.1fG", perf_gb(s.ram_used_mb), perf_gb(s.ram_total_mb));
+    else snprintf(ram_txt, sizeof(ram_txt), "RAM: %.1fG", perf_gb(s.ram_used_mb));
+
+    ImGui::TextColored(ImVec4(0.20f, 0.70f, 0.95f, 1.0f), "%s", cpu_txt);
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(0.85f, 0.55f, 0.85f, 1.0f), "  %s", ram_txt);
+
+    // Line 3: GPU占用+温度+显存使用
+    char gpu_txt[64], vram_txt[64];
+    if (s.gpu_temp_c >= 0) snprintf(gpu_txt, sizeof(gpu_txt), "GPU: %.0f%%  %.0f°C", s.gpu_pct >= 0 ? s.gpu_pct : 0.0f, s.gpu_temp_c);
+    else snprintf(gpu_txt, sizeof(gpu_txt), "GPU: %.0f%%", s.gpu_pct >= 0 ? s.gpu_pct : 0.0f);
+
+    if (s.vram_total_mb > 0) snprintf(vram_txt, sizeof(vram_txt), "VRAM: %.1fG / %.1fG", perf_gb(s.vram_used_mb), perf_gb(s.vram_total_mb));
+    else snprintf(vram_txt, sizeof(vram_txt), "VRAM: %.1fG", perf_gb(s.vram_used_mb));
+
+    ImGui::TextColored(ImVec4(0.40f, 0.85f, 0.40f, 1.0f), "%s", gpu_txt);
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.30f, 1.0f), "  %s", vram_txt);
+
+    ImGui::End();
 }
 
 extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const char **shot) {

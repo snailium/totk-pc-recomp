@@ -312,6 +312,7 @@ static void sampler(void *arg) {
         plat_cpu_load(l, &s.cpu_total_pct, &s.cpu_game_pct, &s.cpu_temp_c);
         plat_mem_info(&s.ram_used_mb, &s.ram_total_mb, &s.ram_game_mb);
         plat_gpu_load(l, &s.gpu_pct, &s.vram_used_mb);
+        plat_gpu_temp(l, &s.gpu_temp_c);
         s.vram_total_mb = vram_total;
         nvml_sample(&s);
         adl_sample(&s);
