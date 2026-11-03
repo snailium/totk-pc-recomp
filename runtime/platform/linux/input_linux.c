@@ -1,6 +1,6 @@
 // SDL3 input for the Linux build: platform-neutral IDs from SDL scancodes and SDL gamepads,
 // supporting generic gamepads (DualSense, Xbox, Switch Pro, 8BitDo, etc.) with deadzones,
-// button mapping, triggers, rumble, and 6-axis gyro/accelerometer motion.
+// button mapping, triggers, rumble, battery monitoring, and 6-axis gyro/accelerometer motion.
 #include <SDL3/SDL.h>
 #include <math.h>
 #include <stdint.h>
@@ -24,7 +24,7 @@ enum {
     STICK_DEAD = 2500,
     STICK_DIR = 16384,
     TRIGGER_ON = 16384,
-    RESCAN_NS = 1000000000ull   // 1s
+    RESCAN_NS = 500000000ull     // 500 ms scan interval when disconnected
 };
 
 static PlatMutex lock = PLAT_MUTEX_INIT;
@@ -33,6 +33,7 @@ static uint8_t pad_down[PAD_COUNT];
 static int32_t axis_vals[6];                  // lx, ly, rx, ry, lt, rt
 static SDL_Gamepad *pad;
 static uint64_t next_scan_ns;
+static uint64_t last_batt_check_ns;
 static int pad_rumble;
 static int pad_labels[4];                     // PAD_SOUTH..PAD_NORTH labels
 static int pad_east_a;
@@ -42,6 +43,7 @@ static int sensor_ok;
 static pthread_t motion_tid;
 static volatile int motion_started;
 static volatile int g_blocked, g_menu;
+static volatile int g_pad_event_pending;
 
 static const SDL_GamepadButton pad_sdl[PAD_COUNT] = {
     [PAD_SOUTH] = SDL_GAMEPAD_BUTTON_SOUTH,
@@ -131,6 +133,25 @@ static int32_t add32(int32_t a, int32_t b) {
     return v > 32767 ? 32767 : v < -32768 ? -32768 : v;
 }
 
+static void check_battery(SDL_Gamepad *g, int log_now) {
+    if (!g) return;
+    int percent = -1;
+    SDL_PowerState pstate = SDL_GetGamepadPowerInfo(g, &percent);
+    const char *pstr = pstate == SDL_POWERSTATE_CHARGING ? "charging"
+                     : pstate == SDL_POWERSTATE_CHARGED ? "charged"
+                     : pstate == SDL_POWERSTATE_ON_BATTERY ? "on battery"
+                     : pstate == SDL_POWERSTATE_NO_BATTERY ? "wired"
+                     : "unknown";
+    if (log_now) {
+        if (percent >= 0) rt_log("input: gamepad power: %s (%d%%)", pstr, percent);
+        else rt_log("input: gamepad power: %s", pstr);
+    }
+    if (pstate == SDL_POWERSTATE_ON_BATTERY && percent >= 0 && percent <= 15) {
+        rt_log("input: WARNING - gamepad battery low (%d%% remaining)", percent);
+    }
+}
+
+// Must be called from the pump/window thread only (SDL thread safety)
 static void scan_pads(void) {
     if (!SDL_WasInit(SDL_INIT_GAMEPAD)) {
         if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
@@ -138,15 +159,20 @@ static void scan_pads(void) {
             return;
         }
     }
-    if (pad && SDL_GamepadConnected(pad)) return;
-    if (pad) {
+    if (pad && !SDL_GamepadConnected(pad)) {
+        const char *name = SDL_GetGamepadName(pad);
+        rt_log("input: gamepad \"%s\" disconnected", name ? name : "unknown");
         SDL_CloseGamepad(pad);
         pad = NULL;
         sensor_pad = 0;
         sensor_ok = 0;
+        memset(pad_down, 0, sizeof pad_down);
+        memset(axis_vals, 0, sizeof axis_vals);
         for (int i = 0; i < 4; i++) pad_labels[i] = PAD_LABEL_NONE;
-        rt_log("input: gamepad disconnected");
+        motion_restart(motion_global());
     }
+    if (pad && SDL_GamepadConnected(pad)) return;
+
     int n = 0;
     SDL_JoystickID *ids = SDL_GetGamepads(&n);
     for (int i = 0; ids && i < n && !pad; i++) {
@@ -178,26 +204,32 @@ static void scan_pads(void) {
            motion ? "gyro and accelerometer" : "no motion sensors",
            pad_layout == PAD_LAYOUT_NINTENDO ? "nintendo" : "xbox",
            pad_east_a ? "labelled A" : "not labelled A");
+    check_battery(pad, 1);
+
+    if (motion) {
+        SDL_JoystickID id = SDL_GetGamepadID(pad);
+        sensor_pad = id;
+        SDL_SetEventEnabled(SDL_EVENT_GAMEPAD_SENSOR_UPDATE, false);
+        sensor_ok = SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, true) &&
+                    SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_ACCEL, true);
+        if (sensor_ok) {
+            rt_log("input: motion sensors on (gyro %.0f Hz, accelerometer %.0f Hz)",
+                   (double)SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_GYRO),
+                   (double)SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_ACCEL));
+        }
+    } else {
+        sensor_pad = 0;
+        sensor_ok = 0;
+    }
 }
 
+// Called from SDL event loop (never block or take long locks here)
 void input_linux_event(const SDL_Event *e) {
     switch (e->type) {
     case SDL_EVENT_GAMEPAD_ADDED:
-    case SDL_EVENT_GAMEPAD_REMAPPED:
-        plat_mutex_lock(&lock);
-        scan_pads();
-        plat_mutex_unlock(&lock);
-        break;
     case SDL_EVENT_GAMEPAD_REMOVED:
-        plat_mutex_lock(&lock);
-        if (pad && e->gdevice.which == SDL_GetGamepadID(pad)) {
-            SDL_CloseGamepad(pad);
-            pad = NULL;
-            sensor_pad = 0;
-            sensor_ok = 0;
-            rt_log("input: gamepad removed");
-        }
-        plat_mutex_unlock(&lock);
+    case SDL_EVENT_GAMEPAD_REMAPPED:
+        __atomic_store_n(&g_pad_event_pending, 1, __ATOMIC_RELEASE);
         break;
     default: break;
     }
@@ -221,32 +253,42 @@ void input_linux_pump(void) {
     if (mbtn & SDL_BUTTON_RMASK) key_down[KEY_MOUSE_R] = 1;
     if (mbtn & SDL_BUTTON_MMASK) key_down[KEY_MOUSE_M] = 1;
 
+    uint64_t now = plat_now_ns();
+    int ev_pending = __atomic_exchange_n(&g_pad_event_pending, 0, __ATOMIC_ACQ_REL);
+    if (ev_pending || (!pad && now >= next_scan_ns)) {
+        next_scan_ns = now + RESCAN_NS;
+        scan_pads();
+    }
+
     memset(pad_down, 0, sizeof pad_down);
     memset(axis_vals, 0, sizeof axis_vals);
-    if (!pad) {
-        uint64_t now = plat_now_ns();
-        if (now >= next_scan_ns) {
-            next_scan_ns = now + RESCAN_NS;
-            scan_pads();
+
+    if (pad && SDL_GamepadConnected(pad)) {
+        for (int i = 0; i < PAD_COUNT; i++) {
+            if (!pad_sdl[i]) continue;
+            if (SDL_GetGamepadButton(pad, pad_sdl[i])) pad_down[i] = 1;
         }
-    }
-    if (!pad || !SDL_GamepadConnected(pad)) return;
+        int lt = (int)SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
+        int rt = (int)SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
+        if (lt >= TRIGGER_ON) pad_down[PAD_ZL] = 1;
+        if (rt >= TRIGGER_ON) pad_down[PAD_ZR] = 1;
 
-    for (int i = 0; i < PAD_COUNT; i++) {
-        if (!pad_sdl[i]) continue;
-        if (SDL_GetGamepadButton(pad, pad_sdl[i])) pad_down[i] = 1;
-    }
-    int lt = (int)SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
-    int rt = (int)SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
-    if (lt >= TRIGGER_ON) pad_down[PAD_ZL] = 1;
-    if (rt >= TRIGGER_ON) pad_down[PAD_ZR] = 1;
+        axis_vals[0] = axis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX));
+        axis_vals[1] = -axis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY));   // Invert Y: up is +y in Switch HID
+        axis_vals[2] = axis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX));
+        axis_vals[3] = -axis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY));  // Invert Y: up is +y in Switch HID
+        axis_vals[4] = lt;
+        axis_vals[5] = rt;
 
-    axis_vals[0] = axis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX));
-    axis_vals[1] = -axis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY));   // Invert Y: up is +y in Switch HID
-    axis_vals[2] = axis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX));
-    axis_vals[3] = -axis(SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY));  // Invert Y: up is +y in Switch HID
-    axis_vals[4] = lt;
-    axis_vals[5] = rt;
+        // Periodic low battery check (every 30 seconds)
+        if (now - last_batt_check_ns >= 30000000000ull) {
+            last_batt_check_ns = now;
+            check_battery(pad, 0);
+        }
+    } else if (pad) {
+        // Disconnected mid-frame
+        scan_pads();
+    }
 }
 
 static void input_log(uint64_t act, int32_t lx, int32_t ly) {
@@ -267,7 +309,7 @@ void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_
     plat_mutex_lock(&lock);
     input_linux_pump();
     uint64_t act = input_map_buttons(key_down);
-    if (pad) act |= input_map_pad_buttons(pad_down, pad_layout);
+    if (pad && SDL_GamepadConnected(pad)) act |= input_map_pad_buttons(pad_down, pad_layout);
     int32_t kl[2] = {0, 0}, kr[2] = {0, 0};
     input_map_stick(key_down, 0, kl);
     input_map_stick(key_down, 1, kr);
@@ -304,7 +346,7 @@ void input_menu(int open) { g_menu = open; }
 int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly) {
     plat_mutex_lock(&lock);
     input_linux_pump();
-    if (!pad) {
+    if (!pad || !SDL_GamepadConnected(pad)) {
         plat_mutex_unlock(&lock);
         if (buttons) *buttons = 0;
         if (lx) *lx = 0;
@@ -323,7 +365,7 @@ int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly) {
 
 int input_pad_layout(void) {
     plat_mutex_lock(&lock);
-    int l = pad ? pad_layout : -1;
+    int l = (pad && SDL_GamepadConnected(pad)) ? pad_layout : -1;
     plat_mutex_unlock(&lock);
     return l;
 }
@@ -331,7 +373,7 @@ int input_pad_layout(void) {
 int input_pad_label(int pad_id) {
     if (pad_id < PAD_SOUTH || pad_id > PAD_NORTH) return PAD_LABEL_NONE;
     plat_mutex_lock(&lock);
-    int lb = pad ? pad_labels[pad_id - PAD_SOUTH] : PAD_LABEL_NONE;
+    int lb = (pad && SDL_GamepadConnected(pad)) ? pad_labels[pad_id - PAD_SOUTH] : PAD_LABEL_NONE;
     plat_mutex_unlock(&lock);
     return lb;
 }
@@ -339,7 +381,7 @@ int input_pad_label(int pad_id) {
 int input_rumble(uint16_t low, uint16_t high, uint32_t ms) {
     plat_mutex_lock(&lock);
     int ok = 0;
-    if (pad && pad_rumble) {
+    if (pad && SDL_GamepadConnected(pad) && pad_rumble) {
         ok = SDL_RumbleGamepad(pad, low, high, ms ? ms : 120) ? 1 : 0;
     }
     plat_mutex_unlock(&lock);
@@ -376,45 +418,25 @@ int input_motion_enabled(void) {
     return on;
 }
 
-static int sensors_ready(void) {
-    if (!pad) return 0;
-    SDL_JoystickID id = SDL_GetGamepadID(pad);
-    if (id == sensor_pad) return sensor_ok;
-    sensor_pad = id;
-    SDL_SetEventEnabled(SDL_EVENT_GAMEPAD_SENSOR_UPDATE, false);
-    sensor_ok = SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) && SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL) &&
-                SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, true) &&
-                SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_ACCEL, true);
-    if (sensor_ok) {
-        rt_log("input: motion sensors on (gyro %.0f Hz, accelerometer %.0f Hz)",
-               (double)SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_GYRO),
-               (double)SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_ACCEL));
-    } else {
-        rt_log("input: \"%s\" has no gyro and accelerometer: six-axis reads at rest",
-               SDL_GetGamepadName(pad));
-    }
-    return sensor_ok;
-}
-
+// 250 Hz background thread: strictly reads sensor data via SDL_GetGamepadSensorData without locking event pumps
 static void *motion_thread_func(void *arg) {
     (void)arg;
     struct timespec ts = {.tv_sec = 0, .tv_nsec = 4000000};   // 4 ms = 250 Hz
     while (motion_started) {
         nanosleep(&ts, NULL);
-        float a[3] = {0}, g[3] = {0};
-        int have = 0;
+        if (!input_motion_enabled()) continue;
         plat_mutex_lock(&lock);
-        if (pad && SDL_GamepadConnected(pad)) {
-            SDL_UpdateGamepads();
-            have = sensors_ready() &&
-                   SDL_GetGamepadSensorData(pad, SDL_SENSOR_ACCEL, a, 3) &&
-                   SDL_GetGamepadSensorData(pad, SDL_SENSOR_GYRO, g, 3);
-        }
+        SDL_Gamepad *p = (pad && SDL_GamepadConnected(pad) && sensor_ok) ? pad : NULL;
         plat_mutex_unlock(&lock);
-        if (!have || !input_motion_enabled()) continue;
-        double acc[3], gyro[3];
-        input_motion_axes(a, g, acc, gyro);
-        motion_feed(motion_global(), acc, gyro, kern_now_ns());
+        if (!p) continue;
+
+        float a[3] = {0}, g[3] = {0};
+        if (SDL_GetGamepadSensorData(p, SDL_SENSOR_ACCEL, a, 3) &&
+            SDL_GetGamepadSensorData(p, SDL_SENSOR_GYRO, g, 3)) {
+            double acc[3], gyro[3];
+            input_motion_axes(a, g, acc, gyro);
+            motion_feed(motion_global(), acc, gyro, kern_now_ns());
+        }
     }
     return NULL;
 }
