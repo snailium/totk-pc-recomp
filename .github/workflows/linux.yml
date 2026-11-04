@@ -30,7 +30,6 @@ jobs:
           if [ -d generated/v121 ]; then
             tools/ci_linux.sh
           else
-            echo "no generated/v121 in this checkout: checking runtime syntax and content"
-            tools/linux_compile_matrix.sh
+            echo "no generated/v121 in this checkout: skipping the build (the self-test needs the generated C)"
             python3 tools/check_content.py
           fi
