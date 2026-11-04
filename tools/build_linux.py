@@ -90,12 +90,19 @@ def main():
     layout = [(m['name'], int(m['base'], 0), int(m['size'], 0))
               for m in json.loads((gen / 'layout.json').read_text())]
     # expected-v<display>.json: v121 -> 1.2.1
-    display = {'v0': '1.0.0', 'v112': '1.1.2', 'v121': '1.2.1', 'v143': '1.4.3'}[args.version]
-    expected = json.loads((ROOT / 'tools' / 'data' / f'expected-v{display}.json').read_text())
-    hashes = expected['exefs_sha256']
-
+    # TotK's releases have display names; any other game (another title being brought up) uses its own label.
+    display = {'v0': '1.0.0', 'v112': '1.1.2', 'v121': '1.2.1', 'v143': '1.4.3'}.get(args.version, args.version)
+    # TotK verifies its modules against the reference dump. Another game being brought up has no such file yet, so its
+    # hashes are taken from the modules actually being built: the runtime still reports them, it just has no reference.
     exefs = (args.exefs or out / 'exefs').resolve()
     romfs = (args.romfs or out / 'romfs').resolve()
+    expected_path = ROOT / 'tools' / 'data' / f'expected-v{display}.json'
+    if expected_path.is_file():
+        hashes = json.loads(expected_path.read_text())['exefs_sha256']
+    else:
+        # Every file the loader checks, not just the linked modules: main.npdm and rtld are checked too.
+        hashes = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                  for path in sorted(exefs.iterdir()) if path.is_file()}
     profile = (ROOT / 'build' / ('profile' if args.version == 'v121' else f'profile-{args.version}')).resolve()
     (out / 'modules.c').write_text(module_glue(layout, hashes, exefs, romfs, profile, args.version), encoding='utf-8')
     # romfs_config.h: the real RomFS identity when an extracted RomFS is next to the build, a named placeholder

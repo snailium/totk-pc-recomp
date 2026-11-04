@@ -6,14 +6,23 @@ on:
 
 jobs:
   selftest:
-    # Ubuntu 24.04 carries SDL3, the Vulkan loader and opus/libvpx/zstd, which is all the Linux build needs.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Dependencies
+      - name: Setup SDL3
+        uses: libsdl-org/setup-sdl@main
+        id: sdl
+        with:
+          version: 3-latest
+          install-linux-dependencies: true
+      - name: Install system dependencies
         run: |
+          if [ -d "${{ steps.sdl.outputs.prefix }}" ]; then
+            sudo cp -a "${{ steps.sdl.outputs.prefix }}"/* /usr/local/
+            sudo ldconfig
+          fi
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang lld libsdl3-dev libvulkan-dev libopus-dev libvpx-dev libzstd-dev
+          sudo apt-get install -y --no-install-recommends clang lld libvulkan-dev libopus-dev libvpx-dev libzstd-dev
       - name: Build and run the self-test
         # The generated C is not in the repository (it comes from recomp/gen.py with the game's own files), so this job
         # only checks the parts that do not need it: the content guard and, when generated/ is present, the full build.
@@ -21,6 +30,7 @@ jobs:
           if [ -d generated/v121 ]; then
             tools/ci_linux.sh
           else
-            echo "no generated/v121 in this checkout: skipping the build (the self-test needs the generated C)"
-            python tools/check_content.py
+            echo "no generated/v121 in this checkout: checking runtime syntax and content"
+            tools/linux_compile_matrix.sh
+            python3 tools/check_content.py
           fi
