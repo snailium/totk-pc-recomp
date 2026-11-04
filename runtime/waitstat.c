@@ -52,4 +52,4 @@ void waitstat_dump(const char *why) {
     }
 }
 
-uint64_t waitstat_now(void) { return kern_now_ns(); }
+uint64_t waitstat_now(void) { return ws_on() ? kern_now_ns() : 0; }

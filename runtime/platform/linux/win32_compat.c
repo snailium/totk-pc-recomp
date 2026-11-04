@@ -14,6 +14,7 @@ static void altstack_install(void);
 void kern_dump_threads(const char *why);   // kernel.c: SIGQUIT prints every guest thread
 uint64_t kern_now_ns(void);                 // host.h: the runtime's clock
 void waitstat_add(const char *name, uint64_t ns);   // waitstat.c: TOTK_WAIT_LOG accounting
+uint64_t waitstat_now(void);
 static void quit_handler(int sig) {
     (void)sig;
     kern_dump_threads("SIGQUIT");
@@ -86,7 +87,7 @@ static void *slot(void **p, size_t size, int kind) {
             } else {
                 pthread_mutexattr_t a;
                 pthread_mutexattr_init(&a);
-                pthread_mutexattr_settype(&a, kind == 2 ? PTHREAD_MUTEX_RECURSIVE : PTHREAD_MUTEX_NORMAL);
+                pthread_mutexattr_settype(&a, kind == 2 ? PTHREAD_MUTEX_RECURSIVE : PTHREAD_MUTEX_ADAPTIVE_NP);
                 pthread_mutex_init(v, &a);
                 pthread_mutexattr_destroy(&a);
             }
@@ -114,11 +115,11 @@ BOOL SleepConditionVariableSRW(PCONDITION_VARIABLE c, PSRWLOCK l, DWORD ms, ULON
     (void)flags;
     pthread_cond_t *cp = COND(c);
     pthread_mutex_t *mp = MUTEX(l);
-    uint64_t w0 = kern_now_ns();
+    uint64_t w0 = waitstat_now();
     int r;
     if (ms == INFINITE) {
         r = pthread_cond_wait(cp, mp);
-        waitstat_add("cond wait (infinite)", kern_now_ns() - w0);
+        waitstat_add("cond wait (infinite)", waitstat_now() - w0);
         return r == 0;
     }
     struct timespec ts;
@@ -127,7 +128,7 @@ BOOL SleepConditionVariableSRW(PCONDITION_VARIABLE c, PSRWLOCK l, DWORD ms, ULON
     ts.tv_nsec += (long)(ms % 1000) * 1000000L;
     if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
     r = pthread_cond_timedwait(cp, mp, &ts);
-    waitstat_add("cond wait (timed)", kern_now_ns() - w0);
+    waitstat_add("cond wait (timed)", waitstat_now() - w0);
     return r == 0;
 }
 
@@ -188,6 +189,7 @@ typedef struct ThreadHandle {
     pthread_t thread;
     pid_t tid;
     int used;
+    int is_guest;
     int detached;
     int suspended;          // 0 = not parked, 1 = parked and published, 2 = released
     CONTEXT ctx;
@@ -306,21 +308,93 @@ static ThreadHandle *handle_for_tid(pid_t tid) {
     return found;
 }
 
+static uint64_t g_ccx0_mask, g_ccx1_mask;
+static int g_ccx_ready;
+static volatile int g_guest_started;
+
+static void ccx_init_once(void) {
+    if (__atomic_load_n(&g_ccx_ready, __ATOMIC_ACQUIRE)) return;
+    const char *env = getenv("TOTK_CCX_SPLIT");
+    if (!env || strcmp(env, "0") != 0) {
+        FILE *f = fopen("/sys/devices/system/cpu/cpu0/cache/index3/shared_cpu_map", "r");
+        if (f) {
+            char buf[128] = {0};
+            if (fgets(buf, sizeof buf, f)) {
+                uint64_t ccx0 = strtoull(buf, NULL, 16);
+                long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+                uint64_t all = (ncpu >= 64) ? ~0ull : ((ncpu > 0) ? ((1ull << ncpu) - 1) : 0);
+                uint64_t ccx1 = all & ~ccx0;
+                if (ccx0 && ccx1 && __builtin_popcountll(ccx0) >= 6 && __builtin_popcountll(ccx1) >= 4) {
+                    g_ccx0_mask = ccx0;
+                    g_ccx1_mask = ccx1;
+                    rt_logf("linux: dual-CCX L3 split active: guest on CPUs %#llx, host/Vulkan on CPUs %#llx",
+                            (unsigned long long)ccx0, (unsigned long long)ccx1);
+                }
+            }
+            fclose(f);
+        }
+    }
+    __atomic_store_n(&g_ccx_ready, 1, __ATOMIC_RELEASE);
+}
+
+static void mask_to_cpuset(uint64_t mask, cpu_set_t *set) {
+    CPU_ZERO(set);
+    for (int i = 0; i < 64; i++)
+        if ((mask >> i) & 1) CPU_SET(i, set);
+}
+
+static void ccx_sweep_non_guest_tasks(void) {
+    if (!g_ccx1_mask) return;
+    DIR *d = opendir("/proc/self/task");
+    if (!d) return;
+    cpu_set_t set1;
+    mask_to_cpuset(g_ccx1_mask, &set1);
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        if (de->d_name[0] < '0' || de->d_name[0] > '9') continue;
+        pid_t tid = (pid_t)atoi(de->d_name);
+        if (tid <= 0) continue;
+        int guest = 0;
+        pthread_mutex_lock(&g_handle_lock);
+        for (int i = 0; i < MAX_THREAD_HANDLES; i++) {
+            if (g_handles[i] && g_handles[i]->used && g_handles[i]->tid == tid && g_handles[i]->is_guest) {
+                guest = 1;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&g_handle_lock);
+        if (!guest) sched_setaffinity(tid, sizeof set1, &set1);
+    }
+    closedir(d);
+}
+
 HANDLE CreateThread(void *attr, SIZE_T stack, PTHREAD_START_ROUTINE fn, void *arg, DWORD flags, DWORD *id) {
     (void)attr;
-    (void)flags;
     install_suspend_handler();
+    ccx_init_once();
     ThreadHandle *h = calloc(1, sizeof *h);
     ThreadStart *s = calloc(1, sizeof *s);
     if (!h || !s) { free(h); free(s); SetLastError(ERROR_NOT_ENOUGH_MEMORY); return NULL; }
+    int is_guest = (stack != 0 && (flags & STACK_SIZE_PARAM_IS_A_RESERVATION)) ? 1 : 0;
     h->kind = K_THREAD;
     h->used = 1;
+    h->is_guest = is_guest;
     s->h = h;
     s->fn = fn;
     s->arg = arg;
     pthread_attr_t a;
     pthread_attr_init(&a);
     if (stack) pthread_attr_setstacksize(&a, stack);
+    if (g_ccx0_mask && g_ccx1_mask) {
+        cpu_set_t set;
+        if (is_guest) {
+            mask_to_cpuset(g_ccx0_mask, &set);
+            pthread_attr_setaffinity_np(&a, sizeof set, &set);
+        } else if (__atomic_load_n(&g_guest_started, __ATOMIC_ACQUIRE)) {
+            mask_to_cpuset(g_ccx1_mask, &set);
+            pthread_attr_setaffinity_np(&a, sizeof set, &set);
+        }
+    }
     int r = pthread_create(&h->thread, &a, thread_body, s);
     pthread_attr_destroy(&a);
     if (r) { free(h); free(s); SetLastError(ERROR_NOT_ENOUGH_MEMORY); return NULL; }
@@ -329,6 +403,17 @@ HANDLE CreateThread(void *attr, SIZE_T stack, PTHREAD_START_ROUTINE fn, void *ar
     for (int i = 0; i < MAX_THREAD_HANDLES; i++)
         if (!g_handles[i]) { g_handles[i] = h; break; }
     pthread_mutex_unlock(&g_handle_lock);
+    if (g_ccx0_mask && g_ccx1_mask) {
+        if (is_guest) {
+            cpu_set_t set0;
+            mask_to_cpuset(g_ccx0_mask, &set0);
+            sched_setaffinity(h->tid, sizeof set0, &set0);
+            if (__atomic_exchange_n(&g_guest_started, 1, __ATOMIC_ACQ_REL) == 0)
+                ccx_sweep_non_guest_tasks();
+        } else if (__atomic_load_n(&g_guest_started, __ATOMIC_ACQUIRE)) {
+            ccx_sweep_non_guest_tasks();
+        }
+    }
     if (id) *id = (DWORD)h->tid;
     return h;
 }
@@ -2111,16 +2196,19 @@ BOOL CreateHardLinkW(const WCHAR *to, const WCHAR *from, void *sa) {
 }
 
 BOOL GetThreadTimes(HANDLE thread, FILETIME *create, FILETIME *exit, FILETIME *kernel, FILETIME *user) {
-    (void)thread;
-    (void)create;
-    (void)exit;
-    (void)kernel;
+    if (create) { create->dwLowDateTime = 0; create->dwHighDateTime = 0; }
+    if (exit) { exit->dwLowDateTime = 0; exit->dwHighDateTime = 0; }
+    if (kernel) { kernel->dwLowDateTime = 0; kernel->dwHighDateTime = 0; }
     if (!user) return TRUE;
+    ThreadHandle *th = thread;
+    clockid_t cid = CLOCK_THREAD_CPUTIME_ID;
+    if (th && th != (HANDLE)(intptr_t)-2 && th->kind == K_THREAD && th->thread)
+        pthread_getcpuclockid(th->thread, &cid);
     struct timespec ts;
-    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts)) return FALSE;
-    uint64_t us = (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000;
-    user->dwLowDateTime = (DWORD)us;
-    user->dwHighDateTime = (DWORD)(us >> 32);
+    if (clock_gettime(cid, &ts)) return FALSE;
+    uint64_t ticks = (uint64_t)ts.tv_sec * 10000000ull + (uint64_t)ts.tv_nsec / 100;
+    user->dwLowDateTime = (DWORD)ticks;
+    user->dwHighDateTime = (DWORD)(ticks >> 32);
     return TRUE;
 }
 
