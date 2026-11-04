@@ -40,17 +40,17 @@ void perf_set_overlay(int mode) {
 }
 
 void perf_present(uint64_t frame) {
-    (void)frame;
     static uint64_t last;
     uint64_t now = plat_now_ns();
     uint64_t d = last ? now - last : 0;
     last = now;
+    if (rt_trace & RT_TRACE_SCHED) kern_sched_report(frame);
     if (__atomic_load_n(&g_perf_overlay_on, __ATOMIC_RELAXED)) {
         uint64_t waits[4] = {0};
         perfmon_frame(now, d, waits, 0, 0);
     }
 }
-int perf_gpu_timing(void) { return 0; }
+int perf_gpu_timing(void) { return (rt_trace & RT_TRACE_PERF) != 0; }
 void (*perf_gpu_stats)(PerfGpu *out);
 
 void prof_start(void) {}

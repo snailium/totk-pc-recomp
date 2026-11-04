@@ -1082,8 +1082,13 @@ static volatile LONG64 m_flush_calls, m_flush_bytes, v_pages, v_skipped, v_misma
 
 static void mirror_mode(int discrete) {
     const char *e = cfg_value("TOTK_MEMORY");
+#ifdef __linux__
+    int mode = 1;   // 0 import, 1 mirror, 2 verify (Linux defaults to mirror to avoid amdgpu userptr page-table overhead)
+    const char *why = discrete ? "auto, discrete gpu" : "auto, linux mirror";
+#else
     int mode = discrete ? 1 : 0;   // 0 import, 1 mirror, 2 verify
     const char *why = discrete ? "auto, discrete gpu" : "auto, uma";
+#endif
     if (strcmp(e, "auto")) {
         if (!strcmp(e, "import")) mode = 0, why = "TOTK_MEMORY=import";
         else if (!strcmp(e, "mirror")) mode = 1, why = "TOTK_MEMORY=mirror";
@@ -1658,6 +1663,7 @@ typedef struct { VkBuffer buf; VmaAllocation alloc; } Staging;
 typedef struct {
     VkCommandBuffer cb;
     VkFence fence;
+    uint64_t timeline_fence;
     uint64_t seq;
     Staging *stg;
     int nstg, cap;
@@ -1698,13 +1704,27 @@ static void free_staging(VkCtx *c, Batch *b) {
     b->nstg = 0;
 }
 
-// Batches complete in submission order (one queue): retire from the front while their fences are signalled.
+// Batches complete in submission order (one queue): retire from the front while their fences/timeline are reached.
 static void retire(VkCtx *c, int wait_all) {
+    uint64_t tl = 0;
+    if (c->timeline) vkGetSemaphoreCounterValue(c->device, c->timeline, &tl);
     int k = 0;
     for (; k < ninflight; k++) {
         Batch *b = &inflight[k];
-        if (wait_all) vkWaitForFences(c->device, 1, &b->fence, VK_TRUE, UINT64_MAX);
-        else if (vkGetFenceStatus(c->device, b->fence) != VK_SUCCESS) break;
+        if (b->timeline_fence) {
+            if (wait_all && b->timeline_fence > tl) {
+                VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+                                          .semaphoreCount = 1, .pSemaphores = &c->timeline,
+                                          .pValues = &b->timeline_fence};
+                vkWaitSemaphores(c->device, &wi, UINT64_MAX);
+                vkGetSemaphoreCounterValue(c->device, c->timeline, &tl);
+            } else if (b->timeline_fence > tl) {
+                break;
+            }
+        } else if (b->fence) {
+            if (wait_all) vkWaitForFences(c->device, 1, &b->fence, VK_TRUE, UINT64_MAX);
+            else if (vkGetFenceStatus(c->device, b->fence) != VK_SUCCESS) break;
+        }
         free_staging(c, b);
         done_seq = b->seq;
         if (nspare == cap_spare) grow((void **)&spare, &cap_spare, sizeof *spare);
@@ -1749,8 +1769,15 @@ VkCommandBuffer vk_upload_begin(void) {
     if (nspare) {
         Batch s = spare[--nspare];
         open_b.cb = s.cb, open_b.fence = s.fence, open_b.stg = s.stg, open_b.cap = s.cap;
+        open_b.timeline_fence = 0;
         vkResetCommandBuffer(open_b.cb, 0);
-        vkResetFences(c->device, 1, &open_b.fence);
+        if (!open_b.fence) {
+            VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+            if (vkCreateFence(c->device, &fi, NULL, &open_b.fence) != VK_SUCCESS)
+                rt_fatal("vk: recreate upload fence failed");
+        } else {
+            vkResetFences(c->device, 1, &open_b.fence);
+        }
     } else {
         VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = cmd_pool,
                                           .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
@@ -1816,6 +1843,26 @@ void *vk_staging(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc) {
     return info.pMappedData;
 }
 
+VkCommandBuffer vk_upload_take_cb(uint64_t timeline_fence) {
+    InitOnceExecuteOnce(&cmd_once, cmd_init, NULL, NULL);
+    EnterCriticalSection(&cmd_lock);
+    VkCtx *c = vk_ctx();
+    if (!c || !open_active) {
+        LeaveCriticalSection(&cmd_lock);
+        return VK_NULL_HANDLE;
+    }
+    for (int i = 0; i < open_b.nstg; i++) vmaFlushAllocation(c->vma, open_b.stg[i].alloc, 0, VK_WHOLE_SIZE);
+    vkEndCommandBuffer(open_b.cb);
+    VkCommandBuffer cb = open_b.cb;
+    open_b.timeline_fence = timeline_fence;
+    open_b.fence = VK_NULL_HANDLE;
+    if (ninflight == cap_inflight) grow((void **)&inflight, &cap_inflight, sizeof *inflight);
+    inflight[ninflight++] = open_b;
+    open_active = 0;
+    LeaveCriticalSection(&cmd_lock);
+    return cb;
+}
+
 uint64_t vk_upload_flush(int wait) {
     InitOnceExecuteOnce(&cmd_once, cmd_init, NULL, NULL);
     EnterCriticalSection(&cmd_lock);
@@ -1838,8 +1885,7 @@ uint64_t vk_upload_flush(int wait) {
     if (c && wait) {
         uint64_t uw0 = waitstat_now();
         while (ninflight && done_seq < seq) {
-            vkWaitForFences(c->device, 1, &inflight[0].fence, VK_TRUE, UINT64_MAX);
-            retire(c, 0);
+            retire(c, 1);
         }
         waitstat_add("upload wait fence", waitstat_now() - uw0);
     }

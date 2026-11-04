@@ -168,8 +168,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
         j.has_crop = 1;
         for (int i = 0; i < 4; i++) j.crop[i] = crop[i];
     }
-    vk_upload_flush(0);   // an upload vk_texture_get just recorded goes before the blit
-    if (!flight_on && !j.value && merge_blit_on()) {
+    if (!flight_on && merge_blit_on()) {
         VkCommandBuffer blit_cb = vk_present_get_cb();
         uint32_t sc_idx = 0;
         VkSemaphore acq_sem = VK_NULL_HANDLE, rdone_sem = VK_NULL_HANDLE;
@@ -263,7 +262,7 @@ static uint64_t submit_sync(const uint64_t *handles, int n) {
     vk_sync_start();
     vk_present_drain();
     vk_texture_new_submit();
-    if (!flight_on && !gfx_replay_async() && merge_blit_on())
+    if (!flight_on && merge_blit_on())
         return vk_sync_defer_submit(handles, n);
     return vk_sync_submit(handles, n);
 }
@@ -344,7 +343,7 @@ static uint64_t replay_enqueue(ReplayItem *it) {
         wait_counted(DR_FULL, p0);
         core_back_unlocked(&away);
     }
-    it->value = it->kind == RI_RELEASE ? 0 : vk_sync_reserve();   // a release signals nothing
+    it->value = (it->kind == RI_SUBMIT) ? vk_sync_reserve() : 0;   // only submissions signal timeline fences
     rq[(rq_head + rq_n) % RQ_CAP] = *it;
     rq_n++;
     WakeAllConditionVariable(&rcv);

@@ -340,6 +340,7 @@ static int sublog(void) {
 static struct {
     int active;
     uint64_t fence;
+    VkCommandBuffer upload;
     VkCommandBuffer pro;
     VkCommandBuffer cb;
 } pending_sub;
@@ -351,6 +352,7 @@ static void flush_pending_locked(VkCtx *c, int wait_count, const VkSemaphoreSubm
     uint64_t fence = pending_sub.fence;
     VkCommandBufferSubmitInfo cbi[16];
     uint32_t cbi_count = 0;
+    if (pending_sub.upload) cbi[cbi_count++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = pending_sub.upload};
     if (pending_sub.pro) cbi[cbi_count++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = pending_sub.pro};
     if (pending_sub.cb) cbi[cbi_count++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = pending_sub.cb};
     for (int i = 0; i < extra_cb_count && cbi_count < 16; i++) cbi[cbi_count++] = extra_cbs[i];
@@ -375,6 +377,7 @@ static void flush_pending_locked(VkCtx *c, int wait_count, const VkSemaphoreSubm
     vk_queue_unlock();
     if (r != VK_SUCCESS) rt_fatal("vk: vkQueueSubmit2 of value %llu failed (%d)", (unsigned long long)fence, (int)r);
     __atomic_store_n(&pending_sub.active, 0, __ATOMIC_RELEASE);
+    pending_sub.upload = VK_NULL_HANDLE;
     pending_sub.pro = VK_NULL_HANDLE;
     pending_sub.cb = VK_NULL_HANDLE;
     AcquireSRWLockExclusive(&st_lock);
@@ -424,13 +427,14 @@ uint64_t vk_sync_defer_submit(const uint64_t *handles, int n) {
     vkEndCommandBuffer(s->cb);
     perf_replay(t0);
     uint64_t uf0 = waitstat_now();
-    vk_upload_flush(0);
+    VkCommandBuffer up_cb = vk_upload_take_cb(fence);
     waitstat_add("upload flush", waitstat_now() - uf0);
     VkCommandBuffer pro = prologue(c, fence);
     s = &slots[cur_slot];
     s->fence = recorded ? fence : 0;
     vk_mem_note_submit(fence);
     pending_sub.fence = fence;
+    pending_sub.upload = up_cb;
     pending_sub.pro = pro;
     pending_sub.cb = recorded ? s->cb : VK_NULL_HANDLE;
     __atomic_store_n(&pending_sub.active, 1, __ATOMIC_RELEASE);
@@ -457,8 +461,27 @@ uint64_t vk_sync_flush_ext(int wait_count, const VkSemaphoreSubmitInfo *wait_inf
         ReleaseSRWLockExclusive(&sub_lock);
         return f;
     }
+    if (extra_cb_count > 0) {
+        VkSubmitInfo2 si = {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+            .waitSemaphoreInfoCount = wait_count > 0 ? (uint32_t)wait_count : 0u,
+            .pWaitSemaphoreInfos = wait_infos,
+            .commandBufferInfoCount = (uint32_t)extra_cb_count,
+            .pCommandBufferInfos = extra_cbs,
+            .signalSemaphoreInfoCount = extra_sig_count > 0 ? (uint32_t)extra_sig_count : 0u,
+            .pSignalSemaphoreInfos = extra_sigs
+        };
+        vk_queue_lock();
+        uint64_t ws0 = waitstat_now();
+        VkResult r = vkQueueSubmit2(c->gfx_queue, 1, &si, extra_fence);
+        waitstat_add("submit2 ioctl", waitstat_now() - ws0);
+        vk_queue_unlock();
+        if (r != VK_SUCCESS) rt_fatal("vk: standalone blit vkQueueSubmit2 failed (%d)", (int)r);
+        ReleaseSRWLockExclusive(&sub_lock);
+        return 0;
+    }
     ReleaseSRWLockExclusive(&sub_lock);
-    return vk_sync_submit_ext(NULL, 0, wait_count, wait_infos, extra_cb_count, extra_cbs, extra_sig_count, extra_sigs, extra_fence);
+    return 0;
 }
 
 uint64_t vk_sync_submit_ext(const uint64_t *handles, int n, int wait_count, const VkSemaphoreSubmitInfo *wait_infos,
@@ -495,13 +518,14 @@ uint64_t vk_sync_submit_ext(const uint64_t *handles, int n, int wait_count, cons
     // After the recording: the uploads it asked for (and every earlier one) precede it in queue order.
     if (sublog()) rt_log("vk: submit %llu: recorded", (unsigned long long)fence);
     uint64_t uf0 = waitstat_now();
-    vk_upload_flush(0);
+    VkCommandBuffer up_cb = vk_upload_take_cb(fence);
     waitstat_add("upload flush", waitstat_now() - uf0);
     if (sublog()) rt_log("vk: submit %llu: uploads flushed", (unsigned long long)fence);
     VkCommandBuffer pro = prologue(c, fence);
     s = &slots[cur_slot];
     VkCommandBufferSubmitInfo cbi[16];
     uint32_t cbi_count = 0;
+    if (up_cb) cbi[cbi_count++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = up_cb};
     if (pro) cbi[cbi_count++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = pro};
     if (recorded) cbi[cbi_count++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = s->cb};
     for (int i = 0; i < extra_cb_count && cbi_count < 16; i++) cbi[cbi_count++] = extra_cbs[i];
