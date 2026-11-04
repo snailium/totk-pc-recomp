@@ -57,9 +57,13 @@ static void check_npdm(void) {
     memcpy(&stack, npdm + 0x1C, 4);
     int prio = npdm[0xE], core = npdm[0xF];
     free(npdm);
+    RtConfig *cfg = (RtConfig *)rt_config();
+    if (prio < 0 || core < 0) rt_fatal("boot: main.npdm has no valid main thread shape (priority %d, core %d)", prio, core);
+    if (!stack) stack = 0x100000;
+    cfg->main_prio = (unsigned)prio, cfg->main_core = (unsigned)core, cfg->main_stack = stack;
     if (prio != 44 || core != 0 || stack != 0x100000)
-        rt_fatal("boot: main.npdm asks for priority %d, core %d, stack %#x; kernel.c builds 44, 0, 0x100000", prio,
-                 core, stack);
+        rt_log("boot: main.npdm asks for priority %d, core %d, stack %#x (TotK's 1.2.1 uses 44, 0, 0x100000)", prio, core,
+               stack);
 }
 
 // ---- the three callbacks of nn::init::Start (rtld's job on hardware)
@@ -312,8 +316,11 @@ static uint64_t cb_addr[3];
 
 static void guest_main(Cpu *c) {
     uint32_t handle = kern_main_thread(&c);
+    // TotK's SDK exports nn::init::Start; games built with the older SDK export the C entry nninitStartup instead, with
+    // the same arguments (main thread handle, argument region, loader_ready, module inits, module finis).
     uint64_t start = ldr_symbol(SYM_INIT_START);
-    if (!start) rt_fatal("boot: %s is not exported", SYM_INIT_START);
+    if (!start) start = ldr_symbol("nninitStartup");
+    if (!start) rt_fatal("boot: neither %s nor nninitStartup is exported", SYM_INIT_START);
     char d[128];
     rt_log("boot: ENTER nn::init::Start at %s, main thread %#x", ldr_describe(start, d, sizeof d), handle);
     // nn::init::Start(main thread handle, arguments region, loader_ready, module_inits, module_finis)

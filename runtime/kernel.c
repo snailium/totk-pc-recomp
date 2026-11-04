@@ -39,9 +39,11 @@
 #define TLR_SIZE 0x200
 #define THREAD_OBJ_SIZE 0x400            // "current thread object" at TLR+0x1F8 (d2r-mobile thread.c)
 #define TLS_SIZE 0x2000
-#define MAIN_STACK (1ull << 20)          // main.npdm META+0x1C
-#define MAIN_PRIO 44                     // META+0xE
-#define MAIN_CORE 0                      // META+0xF
+// main.npdm META: TotK's 1.2.1 values. boot.c reads the real ones from the npdm into rt_config() and the main thread
+// uses those, so a different game's npdm needs no rebuild.
+#define MAIN_STACK_DEFAULT (1ull << 20)
+#define MAIN_PRIO_DEFAULT 44
+#define MAIN_CORE_DEFAULT 0
 #define FIBER_MAX 1024
 
 enum { O_FREE, O_THREAD, O_EVENT_R, O_EVENT_W, O_SESSION = KERN_SESSION, O_TMEM = KERN_TMEM };
@@ -1488,14 +1490,17 @@ uint32_t kern_main_thread(Cpu **cpu) {
     }
     if (g_main) rt_fatal("kern_main_thread: the main thread already runs on another host thread");
     const RtGuestLayout *L = mem_layout();
-    uint64_t stack = L->stack.base + L->stack.size - MAIN_STACK;
-    if (!VirtualAlloc((void *)(uintptr_t)stack, MAIN_STACK, MEM_COMMIT, PAGE_READWRITE))
+    RtConfig *cfg = (RtConfig *)rt_config();
+    uint64_t mstack = cfg->main_stack ? cfg->main_stack : MAIN_STACK_DEFAULT;
+    uint64_t stack = L->stack.base + L->stack.size - mstack;
+    if (!VirtualAlloc((void *)(uintptr_t)stack, mstack, MEM_COMMIT, PAGE_READWRITE))
         rt_fatal("kernel: commit the main thread stack at %#llx failed (error %lu)", (unsigned long long)stack,
                  GetLastError());
-    RtThread *t = thr_new(MAIN_PRIO, MAIN_CORE, 7);
+    RtThread *t = thr_new((int)(cfg->main_prio ? cfg->main_prio : MAIN_PRIO_DEFAULT),
+                          (int)(cfg->main_core ? cfg->main_core : MAIN_CORE_DEFAULT), 7);
     t->started = 1;
     t->is_main = 1;
-    t->stack_top = stack + MAIN_STACK;
+    t->stack_top = stack + mstack;
     t->cpu->sp = t->stack_top;
     t->tid = GetCurrentThreadId();
     perf_main_thread();
@@ -1515,7 +1520,7 @@ uint32_t kern_main_thread(Cpu **cpu) {
 void kern_main_stack(uint64_t *base, uint64_t *size) {
     uint64_t b = __atomic_load_n(&g_main_stack, __ATOMIC_ACQUIRE);
     *base = b;
-    *size = b ? MAIN_STACK : 0;
+    *size = b ? (rt_config()->main_stack ? rt_config()->main_stack : MAIN_STACK_DEFAULT) : 0;
 }
 
 static DWORD WINAPI guest_main(void *p) {
@@ -1656,7 +1661,7 @@ int kern_svc(Cpu *c, uint32_t imm) {
             x[0] = R_BAD_STATE;
             return 1;
         }
-        RtThread *t = thr_new(prio, core >= 0 ? core : MAIN_CORE, core >= 0 ? 1ull << core : 7);
+        RtThread *t = thr_new(prio, core >= 0 ? core : (int)rt_config()->main_core, core >= 0 ? 1ull << core : 7);
         t->entry = x[1];
         t->arg = x[2];
         t->stack_top = x[3] & ~15ull;
@@ -1770,7 +1775,7 @@ int kern_svc(Cpu *c, uint32_t imm) {
         if (t) {
             int core = (int)x[1];
             if (core >= 0) t->core = core;
-            else if (core == -1) t->core = MAIN_CORE;
+            else if (core == -1) t->core = (int)rt_config()->main_core;
             if (x[2]) t->mask = x[2];
             if (t == tcur && t->cur_core >= 0 && !core_allowed(t, t->cur_core)) {   // move off a forbidden core
                 core_put(t);

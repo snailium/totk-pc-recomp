@@ -290,7 +290,15 @@ int rt_knob(const char *name, const char *def);
 void frame_step_present(uint64_t display_ns, int interval); // nvnQueuePresentTexture: the frame's display time and
                                                            // present interval (60 Hz ticks)
 // ---- boot (boot.c, main.c)
-typedef struct { const char *exefs, *romfs, *profile; int boot; double seconds; const char *shot, *gpu; } RtConfig;
+typedef struct {
+    const char *exefs, *romfs, *profile;
+    int boot;
+    double seconds;
+    const char *shot, *gpu;
+    // The main thread's shape, read from main.npdm META at boot: TotK's 1.2.1 asks for priority 44, core 0 and a 1 MiB
+    // stack, and another game may ask for something else.
+    unsigned main_prio, main_core, main_stack;
+} RtConfig;
                                                            // romfs: directory with romfs.bin and index.json;
                                                            // frames: --frames N (0 = no limit); shot: --shot
                                                            // PATH; gpu: TOTK_GPU
