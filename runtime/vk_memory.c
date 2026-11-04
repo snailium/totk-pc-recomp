@@ -335,17 +335,14 @@ void vk_pool_fini(pool_t *p) {
     // Images cut from this range go first; a used buffer or memory waits until the GPU is done with it, since the
     // guest gets the storage back when this returns.
     vk_texture_range_gone(r->lo, r->size, r->alloc);
-    if (r->used && r->kind != POOL_VIRT) {
+    if ((r->used || r->buf || r->mbuf) && r->kind != POOL_VIRT) {
         vk_upload_flush(1);
         vk_queue_lock();
         vkQueueWaitIdle(c->gfx_queue);
         vk_queue_unlock();
     }
     vk_mem_collect();
-    // A mirrored pool's record and buffers outlive the submission being recorded, whose sync copies and write-backs may
-    // name them (the game frees a pool only once the GPU is done with it, but its CPU writes may still be queued).
-    if (r->mbuf) mirror_retiring(r), vk_completion_add(vk_sync_issued() + 1, mirror_retire, r);
-    else destroy_rec(c, r);
+    destroy_rec(c, r);
 }
 
 // Requests were checked by the front end (nvn_api_core.c, MNG totk_vpool.c); apply them in order.
@@ -1182,6 +1179,8 @@ static void mirror_create(PoolRec *r) {
     r->mstate = MS_REFUSED;
     __atomic_add_fetch(&mirror_gen, 1, __ATOMIC_RELEASE);
     if (r->kind != POOL_IMPORT || !r->buf || !n) return;
+    if (watch_self() && (r->flags & NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED))
+        return refuse(r, MR_UNTRACKED, "CPU uncached pool (dynamic host access)");
     AcquireSRWLockShared(&pool_lock);
     int i = pidx_upper(&pool_index, r->lo) - 1;
     while (i >= 0 && pool_index.e[i].buf != r) i--;
