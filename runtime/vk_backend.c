@@ -229,7 +229,7 @@ static SRWLOCK rl = SRWLOCK_INIT;
 static CONDITION_VARIABLE rcv = CONDITION_VARIABLE_INIT;   // item queued, item taken, item done
 static ReplayItem rq[RQ_CAP];
 static int rq_head, rq_n, r_busy, r_started;
-static uint64_t r_presents_queued, r_presents_done, r_submit_done, game_frames;
+static uint64_t r_presents_queued, r_presents_done, r_submit_done, r_submit_fence, game_frames;
 // Under rl: calls, calls that waited and the time waited per cause, since the last replay_log line and over the run.
 static uint64_t dr_calls[DR_N], dr_waits[DR_N], dr_ns[DR_N], dr_tcalls[DR_N], dr_twaits[DR_N], dr_tns[DR_N];
 // TOTK_REPLAY_CHECK: ReadTexels compared with a read after a full drain (under rl): checked, differing, differing
@@ -294,8 +294,12 @@ static DWORD WINAPI replay_main(void *arg) {
             present_image(it.tex, it.has_crop ? it.crop : NULL, it.at, it.queued, frame, it.value);
         }
         AcquireSRWLockExclusive(&rl);
-        if (it.kind == RI_SUBMIT) r_submit_done = it.submit_no;
-        else r_presents_done++;
+        if (it.kind == RI_SUBMIT) {
+            r_submit_done = it.submit_no;
+            r_submit_fence = it.value;
+        } else if (it.kind == RI_PRESENT) {
+            r_presents_done++;
+        }
         r_busy = 0;
         WakeAllConditionVariable(&rcv);
     }
@@ -577,11 +581,47 @@ static void vk_be_guest_read(uint64_t addr, uint64_t size) {
             dr_ns[DR_GUEST_READ] += d, dr_tns[DR_GUEST_READ] += d;
             ReleaseSRWLockExclusive(&rl);
         }
+    } else {
+        vk_sync_flush();
     }
-    vk_sync_flush();
     vk_present_drain();
     vk_texture_write_back(addr, size);
 }
+
+void vk_be_flush_for_wait(uint64_t value) {
+    if (!gfx_replay_async()) {
+        vk_sync_flush();
+        return;
+    }
+    AcquireSRWLockExclusive(&rl);
+    while (vk_sync_fence_issued() < value && (rq_n || r_busy))
+        SleepConditionVariableSRW(&rcv, &rl, INFINITE, 0);
+    int idle = !rq_n && !r_busy;
+    ReleaseSRWLockExclusive(&rl);
+    if (idle && vk_sync_fence_issued() < value)
+        vk_sync_flush();
+}
+
+static int vk_be_fence_wait(uint64_t fence, uint64_t timeout_ns) {
+    if (!gfx_replay_async()) return vk_sync_fence_wait(fence, timeout_ns);
+    AcquireSRWLockExclusive(&rl);
+    while (r_submit_fence < fence && (rq_n || r_busy)) {
+        if (!timeout_ns) {
+            ReleaseSRWLockExclusive(&rl);
+            return 0;
+        }
+        SleepConditionVariableSRW(&rcv, &rl, INFINITE, 0);
+    }
+    int standalone = !rq_n && !r_busy && vk_sync_fence_issued() < fence;
+    ReleaseSRWLockExclusive(&rl);
+    if (standalone) {
+        vk_sync_flush();
+        return vk_sync_fence_wait(fence, timeout_ns);
+    }
+    uint64_t target = fence > 1 ? fence - 1 : 0;
+    return target ? vk_sync_fence_wait(target, timeout_ns) : 1;
+}
+
 // After a fence wait: the value is done, so its replay is too; a later submission the replay records meanwhile marks
 // its targets with a later fence, which write_back_small leaves alone. No drain.
 static void vk_be_cpu_synced(uint64_t fence) {
@@ -604,7 +644,7 @@ const GfxBackend gfx_vulkan_backend = {
     .texture_release = vk_be_texture_release,
     .program_release = vk_be_program_release,
     .submit = vk_be_submit,
-    .fence_wait = vk_sync_fence_wait,
+    .fence_wait = vk_be_fence_wait,
     .fence_done = vk_sync_fence_done,
     .present = vk_be_present,
     .finish = vk_be_finish,

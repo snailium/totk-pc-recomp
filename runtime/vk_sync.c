@@ -612,10 +612,15 @@ int vk_sync_fence_wait(uint64_t value, uint64_t timeout_ns) {
     return ok;
 }
 
+WEAK void vk_be_flush_for_wait(uint64_t value) {
+    (void)value;
+    vk_sync_flush();
+}
+
 static int fence_wait_impl(uint64_t value, uint64_t timeout_ns) {
     vk_sync_start();
     if (value > __atomic_load_n(&issued, __ATOMIC_ACQUIRE))
-        vk_sync_flush();
+        vk_be_flush_for_wait(value);
     AcquireSRWLockExclusive(&st_lock);
     int ok;
     if (value > issued && value > reserved) {
@@ -639,6 +644,7 @@ static int fence_wait_impl(uint64_t value, uint64_t timeout_ns) {
 }
 
 uint64_t vk_sync_fence_done(void) { return __atomic_load_n(&done, __ATOMIC_ACQUIRE); }
+uint64_t vk_sync_fence_issued(void) { return __atomic_load_n(&issued, __ATOMIC_ACQUIRE); }
 
 uint64_t vk_sync_issued(void) {
     vk_sync_flush();

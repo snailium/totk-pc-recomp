@@ -750,7 +750,8 @@ NVN_API(nvnQueuePresentTexture) {
     uint64_t slot = now + pace(&o->pace, now, period);
     gfx_backend()->present(t, o->crop, slot);
     o->ticket[idx] = o->presents;
-    o->avail[idx] = slot + period;
+    uint64_t active_lag = o->active > 1 ? (uint64_t)(o->active - 1) : 1ull;
+    o->avail[idx] = slot + active_lag * period;
     frame_step_present(slot, o->interval);   // frame_rate.c: the real-time step follows the display times
     rt_frame_presented(t, o->presents);
 }
