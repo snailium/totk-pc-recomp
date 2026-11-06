@@ -16,6 +16,7 @@
 #include "host.h"
 #include "kernel.h"
 #include "platform/platform.h"
+#include "platform/platform.h"
 
 #define R_OK 0u
 #define R_TIMEOUT KERN_R_TIMEOUT
@@ -1542,7 +1543,10 @@ static PlatIntr *ap_open_self(void) {
     return h;
 }
 
+static uint64_t guest_cpu_mask(void);   // the guest's affinity group, asked once
+
 static void thread_main(void *p) {
+    plat_thread_pin(guest_cpu_mask());   // the guest's threads start in the host's group (the default) and move home
     RtThread *t = p;
     tcur = t;
     t->tid = plat_thread_id();
@@ -1638,12 +1642,41 @@ void kern_main_stack(uint64_t *base, uint64_t *size) {
 }
 
 static void guest_main(void *p) {
+    plat_thread_pin(guest_cpu_mask());   // the guest's threads start in the host's group (the default) and move home
     void (*fn)(Cpu *) = (void (*)(Cpu *))p;
     Cpu *c;
     kern_main_thread(&c);
     if (!plat_jmp_save(&tcur->exit_jmp)) fn(c);
     thread_finish(tcur);
     return;
+}
+
+// A machine with two L3 groups (a chiplet CPU: the BC-250's two CCX, a Zen 2/3 desktop part) runs the guest's threads
+// on the first and every host thread — Vulkan, the shader translator, the replay — on the second, so neither evicts the
+// other's working set from L3. The process moves to the host's group once, before the guest starts; each guest thread
+// pins itself back to the first when it starts, and host threads started later inherit the second.
+// TOTK_CCX_SPLIT=0 turns the split off.
+// The guest's affinity group, asked once. A chiplet CPU has one group per L3 instance (platform.c: plat_cpu_groups), so
+// the guest's threads take the first and the host's the second, and neither evicts the other's working set from L3. A
+// monolithic CPU has one group holding every processor: nothing is pinned, and every thread runs wherever it likes.
+static uint64_t guest_cpu_mask(void) {
+    static uint64_t mask;
+    static int once;
+    if (!once) {
+        once = 1;
+        const char *env = getenv("TOTK_CCX_SPLIT");
+        if (env && !strcmp(env, "0")) return 0;
+        uint64_t g[2] = {0, 0};
+        if (plat_cpu_groups(g) != 2) return 0;
+        // Threads the runtime starts from now on begin in the host's group, whatever thread starts them; the guest's
+        // threads move themselves to their own group at the top of guest_main and thread_main.
+        plat_thread_set_default_affinity(g[1]);
+        plat_process_affinity(g[1]);
+        mask = g[0];
+        rt_log("kernel: cpu groups: guest on CPUs %#llx, host on CPUs %#llx", (unsigned long long)g[0],
+               (unsigned long long)g[1]);
+    }
+    return mask;
 }
 
 void kern_run_on_guest_main(void (*fn)(Cpu *c)) {
