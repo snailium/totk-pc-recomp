@@ -243,6 +243,7 @@ void lastcall_dump(int n);
 void waitstat_add(const char *name, uint64_t ns);
 uint64_t waitstat_now(void);              // the clock, or 0 when accounting is off
 void waitstat_dump(const char *why);      // prints the table since the last dump and clears it
+int kern_affinity_split(void);            // 1 when the guest and the host are on separate CPU affinity groups
 extern uint64_t rt_guest_start_ns;   // kern_now_ns when the guest started (boot.c), 0 before
 typedef struct { uint64_t svcs, threads, host_calls; } RtStats;
 RtStats rt_stats(void);                                    // host_calls: hostfn_calls()
