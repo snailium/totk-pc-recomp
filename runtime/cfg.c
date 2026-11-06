@@ -140,7 +140,7 @@ static const CfgMeta metas[] = {
     {"OUTPUT_RES", "1920x1080", NULL, RESTART}, {"RENDER_SCALE", "game", "game|50|67|75|100|125|150|200", RESTART},
     {"HUD_WIDTH", "full", "full|21:9|16:9", RESTART},
     {"DYNAMIC_RES", "1", "0|1", LIVE},   // resolution.c res_dynres_live
-    {"UPSCALER", "fsr", "fsr|bilinear", LIVE}, {"SHARPNESS", "80", "0..100", LIVE},
+    {"UPSCALER", "fsr", "fsr|anime4k|bilinear", LIVE}, {"SHARPNESS", "80", "0..100", LIVE},
     {"SCENE_UPSCALER", "off", "off|dlss|fsr3", RESTART}, {"DLAA", "0", "0|1", RESTART},
     {"DLSS", "dlaa", "dlaa|quality|balanced|performance|ultra_performance", LIVE},
     {"FSR_SHARPNESS", "80", "0..100", LIVE},   // vk_dlaa.c fsr_evaluate
