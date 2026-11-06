@@ -239,6 +239,10 @@ uint64_t kern_now_ns(void);
 void lastcall_setup(void);
 void lastcall_note(uint64_t addr, uint64_t lr);
 void lastcall_dump(int n);
+// Wait accounting (waitstat.c): how long the port blocks, per site, with TOTK_WAIT_LOG=1.
+void waitstat_add(const char *name, uint64_t ns);
+uint64_t waitstat_now(void);              // the clock, or 0 when accounting is off
+void waitstat_dump(const char *why);      // prints the table since the last dump and clears it
 extern uint64_t rt_guest_start_ns;   // kern_now_ns when the guest started (boot.c), 0 before
 typedef struct { uint64_t svcs, threads, host_calls; } RtStats;
 RtStats rt_stats(void);                                    // host_calls: hostfn_calls()
