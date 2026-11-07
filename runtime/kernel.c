@@ -2195,6 +2195,17 @@ void *kern_handle_get(uint32_t h, int kind) {
     return o;
 }
 
+uint32_t kern_current_thread_handle(void) { return tcur ? tcur->handle : 0; }
+
+// Diagnostics: does this handle name an event, and which end? Used to follow an event from its creator to the service
+// that is supposed to signal it.
+int kern_handle_event_kind(uint32_t h) {
+    lock();
+    int kind = h_peek(h, O_EVENT_W) ? 1 : h_peek(h, O_EVENT_R) ? 2 : 0;
+    unlock();
+    return kind;
+}
+
 uint32_t kern_event_new(void) {
     Event *e = calloc(1, sizeof *e);
     if (!e) rt_fatal("kernel: event allocation");
