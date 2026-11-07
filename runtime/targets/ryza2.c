@@ -81,6 +81,7 @@ static const RTTarget g_ryza2 = {
     .pool_min = 8ull << 30,   // 1.85 GB of graphics work memory does not fit in the retail pool
     .init_counts = g_ryza2_inits,
     .init_count_n = 3,
+    .present_interval_override = 1,
 };
 
 const RTTarget *rt_target(void) { return &g_ryza2; }
