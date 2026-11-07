@@ -201,8 +201,9 @@ Cpu *kern_cpu(void);                                       // current guest thre
 void kern_free_cores_note(void);                           // for crash reports: logs that free_cores = 1 lifted the
                                                            // virtual core gate, nothing when the gate is on
 uint32_t kern_main_thread(Cpu **cpu);                      // main thread object and Cpu for the calling host thread
-                                                           // (main.npdm: 1 MiB stack at the top of the stack region,
-                                                           // priority 44, core 0); on the main thread: its handle
+                                                           // (stack, priority and core from main.npdm, at the top of
+                                                           // the stack region); on the main thread: its handle
+void kern_main_thread_attrs(uint64_t stack, int prio, int core);   // from main.npdm, before the main thread starts
 void kern_main_stack(uint64_t *base, uint64_t *size);      // the main thread's stack, size 0 before kern_main_thread;
                                                            // svc.c reports it to QueryMemory, memory.c does not know it
 void kern_run_on_guest_main(void (*fn)(Cpu *c));           // start the guest main host thread, run fn there, join
