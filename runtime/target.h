@@ -20,6 +20,14 @@
 // A module's constructor count, the sanity check that the ExeFS is the game the build was made for.
 typedef struct { const char *name; uint64_t entries; } RTInitCount;
 
+// Function-level hook entry: replace an internal guest function at module+offset with a host GuestFn.
+typedef struct RTFuncHook {
+    const char *module;
+    uint64_t offset;
+    GuestFn hook;
+    GuestFn *orig_out;   // if non-NULL, receives the original lifted function pointer
+} RTFuncHook;
+
 typedef struct RTTarget {
     const char *name;
     // The guest main thread's first call: how this title's SDK is entered. The newest SDK goes through
@@ -33,6 +41,11 @@ typedef struct RTTarget {
     // The constructor counts this title's modules have; NULL keeps the shared tables for the TotK versions.
     const RTInitCount *init_counts;
     int init_count_n;
+    // Present interval override: 0 = follow game (default), 1 = force 60 Hz interval, etc.
+    int present_interval_override;
+    // Function hooks: replaces indirect dispatch table slots at boot time without instruction patching.
+    const RTFuncHook *func_hooks;
+    int func_hook_n;
 } RTTarget;
 
 const RTTarget *rt_target(void);
