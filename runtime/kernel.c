@@ -51,6 +51,7 @@ void kern_main_thread_attrs(uint64_t stack, int prio, int core) {
     g_main_prio = prio;
     g_main_core = core;
 }
+}
 #define FIBER_MAX 1024
 
 enum { O_FREE, O_THREAD, O_EVENT_R, O_EVENT_W, O_SESSION = KERN_SESSION, O_TMEM = KERN_TMEM };
@@ -1825,11 +1826,18 @@ int kern_svc(Cpu *c, uint32_t imm) {
         if (!give) plat_yield();
         return 1;
     }
-    case 0x0C: {   // GetThreadPriority(w1 handle -> w1)
+    case 0x0C: {   // GetThreadPriority(w1 handle -> w1); handle 0 means the calling thread
+        // Older SDKs ask for the priority of handle 0 (the calling thread) during nn::os start-up and abort on an error;
+        // libnx declares the answer through the pointer in x0, older code reads the register back, so both are served.
+        uint64_t out = x[0];
+        uint32_t h = (uint32_t)x[1];
         lock();
-        RtThread *t = h_get((uint32_t)x[1], O_THREAD);
+        RtThread *t = (h == 0 || h == 0xffffffffu) ? tcur : h_get(h, O_THREAD);
         x[0] = t ? R_OK : R_BAD_HANDLE;
-        if (t) x[1] = (uint64_t)t->prio;
+        if (t) {
+            x[1] = (uint64_t)t->prio;
+            if (out >= 0x7000000000ull && out < 0x8000000000ull) *(int32_t *)(uintptr_t)out = t->prio;
+        }
         unlock();
         return 1;
     }
@@ -1889,11 +1897,16 @@ int kern_svc(Cpu *c, uint32_t imm) {
         x[0] = R_OK;
         return 1;
     }
-    case 0x25: {   // GetThreadId(w1 handle -> x1)
+    case 0x25: {   // GetThreadId(w1 handle -> x1); handle 0 means the calling thread
+        uint64_t out = x[0];
+        uint32_t h = (uint32_t)x[1];
         lock();
-        RtThread *t = h_get((uint32_t)x[1], O_THREAD);
+        RtThread *t = (h == 0 || h == 0xffffffffu) ? tcur : h_get(h, O_THREAD);
         x[0] = t ? R_OK : R_BAD_HANDLE;
-        if (t) x[1] = t->id;
+        if (t) {
+            x[1] = t->id;
+            if (out >= 0x7000000000ull && out < 0x8000000000ull) *(uint64_t *)(uintptr_t)out = t->id;
+        }
         unlock();
         return 1;
     }

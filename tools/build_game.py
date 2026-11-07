@@ -187,6 +187,8 @@ DEFAULT_DEPS = ROOT / 'toolchain' / 'deps-mingw'
 # Runtime sources compiled per install, not in the library: romfs.c includes romfs_config.h, patches.c and ov_zstd.c
 # the patches.h of the player's game version (its patch page is the page after that version's main; ov_zstd.c's host
 # functions sit on it). mouse_direct.c also registers host callbacks relative to that version's patch page.
+TARGET = 'totk'   # --target: which runtime/targets/<name>.c is the title's target layer
+
 INSTALL_SIDE = {'romfs.c', 'patches.c', 'ov_zstd.c', 'mouse_direct.c'}
 LIB_NAME = 'libtotkrt.a'
 AR = UCRT / 'llvm-ar.exe' if WIN else on_path('llvm-ar')
@@ -316,11 +318,19 @@ def other_os(name):
 
 
 def runtime_sources(skip=()):
-    """Every runtime/*.c, *.cpp, platform/*.c, *.rc, the in-game menu (ui/*.cpp) and Dear ImGui of this OS except the
+    """Every runtime/*.c, *.cpp, platform/*.c, targets/*.c, *.rc, the in-game menu (ui/*.cpp) and Dear ImGui of this OS except the
     names in skip, so a task adds a file without editing this script."""
-    pats = ('*.c', '*.cpp', 'platform/*.c', '*.rc', 'ui/*.cpp', 'third_party/imgui/*.cpp',
+    pats = ('*.c', '*.cpp', 'platform/*.c', 'targets/*.c', '*.rc', 'ui/*.cpp', 'third_party/imgui/*.cpp',
             'third_party/imgui/backends/*.cpp')
-    return sorted(p for pat in pats for p in RUNTIME.glob(pat) if p.name not in skip and not other_os(p.name))
+    keep = []
+    for pat in pats:
+        for p in RUNTIME.glob(pat):
+            if p.name in skip or other_os(p.name):
+                continue
+            if p.parent.name == 'targets' and p.stem != TARGET:
+                continue
+            keep.append(p)
+    return sorted(keep)
 
 
 def install_stamp(out, runtime_lib):
@@ -829,6 +839,7 @@ def main():
                     help='profile-guided optimisation, generated code at -O2: gen builds an instrumented totk.exe '
                          '(needs --toolchain on Windows: MSYS2 clang ships no profile runtime); FILE builds with that '
                          '.profdata (tools/pgo.py merge)')
+    ap.add_argument('--target', default='totk', help='which runtime/targets/<name>.c is linked (default: totk)')
     ap.add_argument('--expected', type=Path,
                     help='expected hashes (default tools/data/expected-<display version>.json)')
     args = ap.parse_args()
@@ -851,6 +862,8 @@ def main():
         sys.exit(f'{paths["romfs"] / "index.json"} not found: without the RomFS the game stops at start. Run '
                  'tools/extract.py (it writes extracted/<version> into the [work] dir of config.local.toml), pass '
                  '--romfs DIR, or --no-romfs to build without it')
+    global TARGET
+    TARGET = args.target
     expected = args.expected
     if not expected:
         if args.version not in DISPLAY_VERSIONS:

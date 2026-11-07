@@ -408,7 +408,11 @@ static int alias_all_mapped(uint64_t a, uint64_t n) {   // under lock
 
 static uint32_t stack_move(int unmap, uint64_t dst, uint64_t src, uint64_t n) {
     if (!n || ((dst | src | n) & (PAGE - 1))) return R_INVALID_ADDRESS;
-    if (!inside(dst, n, L.stack)) return R_INVALID_REGION;
+    // The destination of a stack alias mapping is not confined to TotK's stack window: an SDK that manages its own stacks
+    // maps one it allocated in the heap (nn::os::detail::ThreadManagerImplByHorizon::MapAliasStack), so any range the
+    // process already owns is accepted -- the stack window, the heap, or the alias region.
+    if (!inside(dst, n, L.stack) && !inside(dst, n, (RtRange){L.heap.base, heap_size}) && !inside(dst, n, L.alias))
+        return R_INVALID_REGION;
     int in_heap = inside(src, n, (RtRange){L.heap.base, heap_size});
     int in_alias = inside(src, n, L.alias);
     if (!in_heap && !in_alias) return R_INVALID_REGION;

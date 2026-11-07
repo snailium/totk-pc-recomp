@@ -1,0 +1,13 @@
+{
+  "_comment": "Verified outputs of the Atelier Ryza 2 base title (v524288) extraction. Hashes only; no game data.",
+  "title_id": "0100B020117D8000",
+  "version": 524288,
+  "display_version": "ryza2",
+  "exefs_sha256": {
+    "main": "7e0595e2668f83999b071e1bb3aede00e029e0798ee706a7bef8ae4f5c368229",
+    "main.npdm": "eb383a8ebbd896acb4f9c30a8bee8d08d148285d539975908b7f7565bd68cee3",
+    "rtld": "b09545d23efe76925191e9ded2c5ca81179f07fc823162c2b367a63b82d8d9fc",
+    "sdk": "71a49827250b6bc2883ac44e5d42f4d20110a95d930c2387311c7ff415eb4534",
+    "subsdk0": "b515e170ed8799af63e0f2e1a58b344ec8c78605976a2148374d13e6ced93d30"
+  }
+}
