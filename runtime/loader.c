@@ -400,8 +400,23 @@ static void relocate_relr(Mod *m) {
     }
 }
 
+// TOTK_LDR_DUMP=1: print each module's imports in slot order. A PLT stub loads its target from the module's GOT at
+// 0x700199e000 + 8 * slot, and an abort inside one names only "sdk+0x…": the slot is what maps it back to a name.
+static void dump_imports(Mod *m) {
+    // The JUMP_SLOT relocations in slot order: a PLT stub loads its target from base + off, so an abort that names only
+    // "sdk+0x…" maps back to the name through the offset the stub uses.
+    for (uint64_t j = 0; j < m->njmprel; j++) {
+        if ((uint32_t)m->jmprel[j].info != R_JUMP_SLOT) continue;
+        uint32_t si = (uint32_t)(m->jmprel[j].info >> 32);
+        uint64_t slot = m->pub.base + m->jmprel[j].off;
+        rt_log("ldr: %s slot %#llx %s -> %#llx", m->pub.name ? m->pub.name : "?", (unsigned long long)m->jmprel[j].off,
+               sym_name(m, si), (unsigned long long)(slot ? *(const uint64_t *)(uintptr_t)slot : 0));
+    }
+}
+
 // Import table statistics: every undefined named symbol, bound by guest definition (overrides aside).
 static void count_imports(Mod *m) {
+    if (getenv("TOTK_LDR_DUMP")) dump_imports(m);
     for (uint32_t i = 1; i < m->nsyms; i++) {
         if (sym_defined(m, i) || !*sym_name(m, i)) continue;
         m->imports++;

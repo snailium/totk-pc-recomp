@@ -17,6 +17,10 @@
 #define RT_SDK_USER_CRITICAL_SECTIONS 1u   // the SDK takes its critical sections in user mode (Ryza 2 and older): the
                                            // kernel has to own them, or a condition variable cannot release and hand off
 
+// A mount prefix the title uses for a RomFS folder of its own: "DISC:" is the path it opens its data through, and the
+// port maps it onto the RomFS folder that data lives in.
+typedef struct { const char *prefix; const char *romfs_dir; } RTMountAlias;
+
 // A module's constructor count, the sanity check that the ExeFS is the game the build was made for.
 typedef struct { const char *name; uint64_t entries; } RTInitCount;
 
@@ -28,6 +32,8 @@ typedef struct RTTarget {
     void (*guest_main)(Cpu *c);
     unsigned sdk_flags;
     const char *romfs_image_name;
+    // The title's own mount prefixes into the RomFS, terminated by a NULL prefix; NULL when it uses "rom:" only.
+    const RTMountAlias *mount_aliases;
     // The application pool this title needs, when it is larger than the retail default; 0 keeps the default.
     uint64_t pool_min;
     // The constructor counts this title's modules have; NULL keeps the shared tables for the TotK versions.

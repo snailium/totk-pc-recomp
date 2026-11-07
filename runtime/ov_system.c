@@ -913,6 +913,15 @@ static void ov_make_language_code(Cpu *c) {
     ret_x(c, 0);
 }
 HOST_OVERRIDE("_ZN2nn8settings6detail16MakeLanguageCodeEPNS0_12LanguageCodeENS0_8LanguageE", ov_make_language_code);
+// nn::Result nn::friends::detail::ShimLibraryGlobal::Initialize(): brings up the friend service through a subdomain client,
+// which the port does not serve. There is no friend data offline, so the library reports itself up and every query the
+// title makes is answered by the overrides below when it makes one.
+static void ov_friends_initialize(Cpu *c) {
+    (void)c;
+    rt_log("friends: offline, the friend service is not brought up");
+    ret_x(c, 0);
+}
+HOST_OVERRIDE("_ZN2nn7friends6detail17ShimLibraryGlobal10InitializeEv", ov_friends_initialize);
 
 // int nn::aoc::CountAddOnContent(): the SDK asks before any service session exists, and the lifted function dereferences
 // its uninitialised service object; the port has no add-on content, so the answer is zero.

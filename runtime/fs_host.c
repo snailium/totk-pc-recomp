@@ -22,6 +22,7 @@
 
 #include "fs.h"
 #include "host.h"
+#include "target.h"
 #include "platform/platform.h"
 #include "romfs_path.h"
 
@@ -877,7 +878,25 @@ static int64_t host_read_at(PlatFile *f, void *buf, uint32_t n, uint64_t off) {
     return got < 0 ? -1 : got;
 }
 
+// A path under one of the title's own mount prefixes becomes the RomFS path it stands for (target.h: mount_aliases).
+static const char *alias_path(const char *path, char *buf, size_t cap) {
+    const RTMountAlias *a = rt_target()->mount_aliases;
+    if (!a || !path) return path;
+    for (; a->prefix; a++) {
+        size_t n = strlen(a->prefix);
+        if (strncmp(path, a->prefix, n)) continue;
+        const char *rest = path + n;
+        while (*rest == '/') rest++;   // "DISC:/Sound/x" and "DISC:Sound/x" are the same path; "//" would be rejected
+        if (*a->romfs_dir) snprintf(buf, cap, "rom:/%s/%s", a->romfs_dir, rest);
+        else snprintf(buf, cap, "rom:/%s", rest);
+        return buf;
+    }
+    return path;
+}
+
 static uint32_t open_file(uint64_t *out, const char *path, int mode) {
+    char abuf[PATH_CAP];
+    path = alias_path(path, abuf, sizeof abuf);
     if (romfs_owns(path)) return romfs_open(out, path, mode);
     fs_trace(mode & FS_OPEN_WRITE ? "write" : "read", path);
     if (!out || !(mode & (FS_OPEN_READ | FS_OPEN_WRITE)) || (mode & ~7)) return FS_R_INVALID_ARGUMENT;
@@ -1029,6 +1048,8 @@ static uint32_t rename_file(const char *from, const char *to) {
 }
 
 static uint32_t entry_type(int *out, const char *path) {
+    char abuf[PATH_CAP];
+    path = alias_path(path, abuf, sizeof abuf);
     if (romfs_owns(path)) return romfs_entry_type(out, path);
     char p[PATH_CAP];
     uint32_t r = host_path(path, p, sizeof p);
@@ -1060,15 +1081,24 @@ static uint32_t delete_recursive(const char *path) {
 }
 
 static uint32_t open_directory(uint64_t *out, const char *path, int mode) {
-    if (romfs_owns(path)) rt_fatal("fs: OpenDirectory on the RomFS (%s) is not implemented", path);
-    char p[PATH_CAP];
-    uint32_t r = host_path(path, p, sizeof p);
-    if (r) return r;
+    char abuf[PATH_CAP];
+    path = alias_path(path, abuf, sizeof abuf);
     if (!out || mode < 1 || mode > 3) return FS_R_INVALID_ARGUMENT;
-    if (plat_fs_kind(p) != PLAT_FS_DIR) return FS_R_PATH_NOT_FOUND;
-    Listing l;
-    int e = list_dir(p, &l);
-    if (e) return fs_result(e);
+    Listing l = {0};
+    uint32_t r = 0;
+    if (romfs_owns(path)) {
+        // A RomFS folder: the index knows every path, so the listing is built from it (an empty folder lists nothing).
+        const char *rel = romfs_relative(path);
+        if (!rel) return FS_R_PATH_NOT_FOUND;
+        romfs_list(rel, listing_add, &l);
+    } else {
+        char p[PATH_CAP];
+        r = host_path(path, p, sizeof p);
+        if (r) return r;
+        if (plat_fs_kind(p) != PLAT_FS_DIR) return FS_R_PATH_NOT_FOUND;
+        int e = list_dir(p, &l);
+        if (e) return fs_result(e);
+    }
     plat_mutex_lock(&lock);
     for (int i = 0; i < NDIRS; i++)
         if (!dirs[i].used) {
@@ -1116,10 +1146,15 @@ static void close_directory(uint64_t h) {
 // and ApplicationId are 8-byte structs passed in one register; Uid, ReadOption and WriteOption by reference.
 #define I32(i) ((int32_t)arg_x(c, i))
 #define I64(i) ((int64_t)arg_x(c, i))
-static void ov_open_file(Cpu *c) { ret_x(c, open_file(arg_p(c, 0), arg_p(c, 1), I32(2))); }
-static void ov_file_size(Cpu *c) { ret_x(c, file_size(arg_p(c, 0), arg_x(c, 1))); }
+// TOTK_TRACE=fs also reports what each of these answered, which is how a title that aborts on a Result is pinned down.
+static uint32_t fs_ret(const char *what, const char *path, uint32_t r) {
+    if (r && fs_trace_on()) rt_log("fs: %s(\"%s\") -> %#x", what, path ? path : "", r);
+    return r;
+}
+static void ov_open_file(Cpu *c) { const char *pth = arg_p(c, 1); ret_x(c, fs_ret("OpenFile", pth, open_file(arg_p(c, 0), pth, I32(2)))); }
+static void ov_file_size(Cpu *c) { ret_x(c, fs_ret("GetFileSize", "", file_size(arg_p(c, 0), arg_x(c, 1)))); }
 static void ov_close_file(Cpu *c) { close_file(arg_x(c, 0)); }
-static void ov_entry_type(Cpu *c) { ret_x(c, entry_type(arg_p(c, 0), arg_p(c, 1))); }
+static void ov_entry_type(Cpu *c) { const char *pth = arg_p(c, 1); ret_x(c, fs_ret("GetEntryType", pth, entry_type(arg_p(c, 0), pth))); }
 static void ov_read_file(Cpu *c) { ret_x(c, read_file(arg_p(c, 0), arg_x(c, 1), I64(2), arg_p(c, 3), arg_x(c, 4))); }
 static void ov_read_options(Cpu *c) { ret_x(c, read_file(arg_p(c, 0), arg_x(c, 1), I64(2), arg_p(c, 3), arg_x(c, 4))); }
 static void ov_read_exact(Cpu *c) { ret_x(c, read_exact(arg_x(c, 0), I64(1), arg_p(c, 2), arg_x(c, 3))); }
@@ -1131,8 +1166,33 @@ static void ov_delete_file(Cpu *c) { ret_x(c, delete_file(arg_p(c, 0))); }
 static void ov_rename_file(Cpu *c) { ret_x(c, rename_file(arg_p(c, 0), arg_p(c, 1))); }
 static void ov_create_directory(Cpu *c) { ret_x(c, create_directory(arg_p(c, 0))); }
 static void ov_delete_recursive(Cpu *c) { ret_x(c, delete_recursive(arg_p(c, 0))); }
-static void ov_open_directory(Cpu *c) { ret_x(c, open_directory(arg_p(c, 0), arg_p(c, 1), I32(2))); }
-static void ov_read_directory(Cpu *c) { ret_x(c, read_directory(arg_p(c, 0), arg_p(c, 1), arg_x(c, 2), I64(3))); }
+static void ov_open_directory(Cpu *c) {
+    const char *pth = arg_p(c, 1);
+    ret_x(c, fs_ret("OpenDirectory", pth, open_directory(arg_p(c, 0), pth, I32(2))));
+}
+// nn::Result nn::fs::GetDirectoryEntryCount(int64_t *out, DirectoryHandle h): the count of the listing taken at open,
+// which is what the SDK's ReadDirectory loop asks for before it starts.
+static void ov_directory_count(Cpu *c) {
+    int64_t *out = arg_p(c, 0);
+    uint64_t h = arg_x(c, 1);
+    if (h < DIR_BASE || h >= DIR_BASE + NDIRS || !out) {
+        ret_x(c, FS_R_INVALID_ARGUMENT);
+        return;
+    }
+    Dir *d = &dirs[h - DIR_BASE];
+    if (!d->used) {
+        ret_x(c, FS_R_INVALID_ARGUMENT);
+        return;
+    }
+    *out = d->n;
+    ret_x(c, 0);
+}
+
+static void ov_read_directory(Cpu *c) {
+    uint32_t r = read_directory(arg_p(c, 0), arg_p(c, 1), arg_x(c, 2), I64(3));
+    if (r && fs_trace_on()) rt_log("fs: ReadDirectory(handle %#llx) -> %#x", (unsigned long long)arg_x(c, 2), r);
+    ret_x(c, r);
+}
 static void ov_close_directory(Cpu *c) { close_directory(arg_x(c, 0)); }
 static void ov_mount_save(Cpu *c) { ret_x(c, mount_save(arg_p(c, 0), arg_p(c, 1))); }
 static void ov_mount_save_ro(Cpu *c) { ret_x(c, mount_save_ro(arg_p(c, 0), arg_x(c, 1), arg_p(c, 2))); }
@@ -1204,6 +1264,7 @@ HOST_OVERRIDE(S_CREATE_DIRECTORY, ov_create_directory);
 HOST_OVERRIDE(S_DELETE_RECURSIVE, ov_delete_recursive);
 HOST_OVERRIDE(S_OPEN_DIRECTORY, ov_open_directory);
 HOST_OVERRIDE(S_READ_DIRECTORY, ov_read_directory);
+HOST_OVERRIDE("_ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE", ov_directory_count);
 HOST_OVERRIDE(S_CLOSE_DIRECTORY, ov_close_directory);
 HOST_OVERRIDE(S_MOUNT_SAVE, ov_mount_save);
 HOST_OVERRIDE(S_MOUNT_SAVE_RO, ov_mount_save_ro);

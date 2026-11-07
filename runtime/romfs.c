@@ -171,6 +171,8 @@ static void verify_image(const char *dir) {
 }
 
 // ---- index lookup
+static char last_dir[1024];   // romfs_list: the folder it reported last, to skip its repeats
+
 static uint64_t lower(const char *name) {
     uint64_t lo = 0, hi = file_count;
     while (lo < hi) {
@@ -189,6 +191,36 @@ static size_t added_lower(const char *p) {
         else hi = m;
     }
     return lo;
+}
+
+// Enumerate the immediate children of a RomFS folder ("Data/NX", or "" for the root), calling cb with the child's name,
+// its kind (PLAT_FS_DIR or PLAT_FS_FILE) and its size. The index is sorted by name, so one walk over the range of paths
+// that start with the folder's prefix is enough; a sub-folder shows up once per file under it and is reported first.
+int romfs_list(const char *dir, int (*cb)(const char *, int, uint64_t, void *), void *ctx) {
+    if (!cb || !index_bytes) return 0;
+    char prefix[1024];
+    size_t n = dir && *dir ? (size_t)snprintf(prefix, sizeof prefix, "%s/", dir) : 0;
+    if (n >= sizeof prefix) return 0;
+    int added_n = 0;
+    last_dir[0] = 0;
+    for (uint64_t i = lower(prefix); i < file_count; i++) {
+        const char *name = entry_name(entry(i));
+        if (strncmp(name, prefix, n)) break;
+        const char *rest = name + n;
+        const char *slash = strchr(rest, '/');
+        size_t len = slash ? (size_t)(slash - rest) : strlen(rest);
+        if (!len || len >= sizeof last_dir) continue;
+        if (slash) {
+            if (!strncmp(last_dir, rest, len) && last_dir[len] == 0) continue;   // the same folder again
+            memcpy(last_dir, rest, len), last_dir[len] = 0;
+            added_n += cb(last_dir, PLAT_FS_DIR, 0, ctx) ? 1 : 0;
+        } else {
+            char file[1024];
+            memcpy(file, rest, len), file[len] = 0;
+            added_n += cb(file, PLAT_FS_FILE, entry(i).size, ctx) ? 1 : 0;
+        }
+    }
+    return added_n;
 }
 
 // The index of RomFS path p (an added file: file_count + k), or UINT64_MAX.
@@ -1106,6 +1138,8 @@ void fs_init(void) {
 }
 
 // ---- the RomFS interface (fs.h)
+int fs_trace_on(void) { return (rt_trace & RT_TRACE_FS) != 0; }
+
 void fs_trace(const char *what, const char *path) {
     static double t0;
     if (!(rt_trace & RT_TRACE_FS)) return;
@@ -1144,6 +1178,27 @@ int romfs_owns(const char *path) {
 
 int romfs_handle(uint64_t h) { return h > ROMFS_HANDLE_BASE && h < ROMFS_HANDLE_BASE + NH; }
 
+// The path of path relative to the mounted RomFS, or NULL when it is not under the mount.
+// Some titles join their mount root and a leading-slash resource themselves, producing "rom:/Data/NX//Shader/x": the
+// repeated separator is collapsed here, before the index lookup, because the index holds one "/" per level.
+static const char *romfs_relative_norm(const char *path) {
+    if (!path) return NULL;
+    // Collapse the repeated separators first: romfs_path_relative accepts them, so a fallback after it never runs, and
+    // the index lookup would then miss ("Data/NX//Res_JP/x" is not "Data/NX/Res_JP/x"). Ordinary paths are copied
+    // unchanged, so the common case costs one pass.
+    static _Thread_local char buf[1024];
+    if (strlen(path) >= sizeof buf) return NULL;
+    size_t o = 0;
+    for (size_t i = 0; path[i]; i++) {
+        if (path[i] == '/' && o && buf[o - 1] == '/') continue;
+        buf[o++] = path[i];
+    }
+    buf[o] = 0;
+    return romfs_path_relative(mount_name, buf);
+}
+
+const char *romfs_relative(const char *path) { return romfs_relative_norm(path); }
+
 uint32_t romfs_mount(const char *name) {
     fs_init();
     if (!name || !romfs_path_valid_relative(name) || strlen(name) >= sizeof mount_name || strchr(name, '/') ||
@@ -1160,7 +1215,7 @@ uint32_t romfs_mount(const char *name) {
 uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
     fs_trace("rom", path);
     if (!out || mode != FS_OPEN_READ) return FS_R_UNSUPPORTED_OPEN;
-    const char *p = romfs_path_relative(mount_name, path);
+    const char *p = romfs_relative_norm(path);
     if (!p) return FS_R_PATH_NOT_FOUND;
     uint64_t i = file_index(p);
     if (i == UINT64_MAX) return FS_R_PATH_NOT_FOUND;
@@ -1257,7 +1312,7 @@ void romfs_close(uint64_t h) {
 
 uint32_t romfs_entry_type(int *out, const char *path) {
     if (!out) return FS_R_INVALID;
-    const char *p = romfs_path_relative(mount_name, path);
+    const char *p = romfs_relative_norm(path);
     if (!p) return FS_R_PATH_NOT_FOUND;
     if (file_index(p) != UINT64_MAX) {
         *out = FS_ENTRY_FILE;
@@ -1274,7 +1329,13 @@ uint32_t romfs_entry_type(int *out, const char *path) {
 
 // ---- overrides
 // nn::Result nn::fs::MountRom(const char *name, void *cache, size_t cache_size)
-static void ov_mount_rom(Cpu *c) { ret_x(c, romfs_mount(arg_p(c, 0))); }
+static void ov_mount_rom(Cpu *c) {
+    const char *name = arg_p(c, 0);
+    uint32_t r = romfs_mount(name);
+    rt_log("fs: MountRom(\"%s\", cache %#llx) -> %#x", name ? name : "(null)", (unsigned long long)arg_x(c, 2),
+           (unsigned)r);
+    ret_x(c, r);
+}
 // nn::Result nn::fs::QueryMountRomCacheSize(size_t *out): no cache needed, the host reads the image directly
 static void ov_query_cache(Cpu *c) {
     uint64_t *out = arg_p(c, 0);

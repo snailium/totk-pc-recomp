@@ -49,7 +49,12 @@ const char *romfs_prompts(void);
 int romfs_prompts_ready(const char *folder);
 int romfs_prompts_off(const char *folder);
 const char *romfs_overlay(size_t k, const char **file, uint64_t *size, int *is_added);   // RomFS path of overlay k
-void fs_trace(const char *what, const char *path);         // TOTK_TRACE=fs: one line per open
+void fs_trace(const char *what, const char *path);
+int fs_trace_on(void);   // TOTK_TRACE=fs is on         // TOTK_TRACE=fs: one line per open
+// The immediate children of a RomFS folder, for nn::fs::OpenDirectory.
+// The immediate children of a RomFS folder, for nn::fs::OpenDirectory.
+const char *romfs_relative(const char *path);   // relative to the mounted RomFS, NULL if not under it
+int romfs_list(const char *dir, int (*cb)(const char *name, int kind, uint64_t size, void *ctx), void *ctx);
 
 // ---- fs_host.c
 void fs_host_set_profile(const char *dir);                 // profile directory; before the first storage mount only

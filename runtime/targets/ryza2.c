@@ -73,11 +73,17 @@ static void ryza2_guest_main(Cpu *c) {
 // The module constructor counts of the base title (main 85, subsdk0 44, sdk 109): the ExeFS sanity check.
 static const RTInitCount g_ryza2_inits[] = {{"main", 85}, {"subsdk0", 44}, {"sdk", 109}};
 
+// The mount table the title prints at start-up: ROOT: is the RomFS itself, DISC: and RES: are rom:/Data/NX/.
+static const RTMountAlias g_ryza2_aliases[] = {
+    {"ROOT:", ""}, {"DISC:", "Data/NX"}, {"RES:", "Data/NX"}, {NULL, NULL},
+};
+
 static const RTTarget g_ryza2 = {
     .name = "ryza2",
     .guest_main = ryza2_guest_main,
     .sdk_flags = RT_SDK_USER_CRITICAL_SECTIONS,
     .romfs_image_name = "romfs.bin",
+    .mount_aliases = g_ryza2_aliases,
     .pool_min = 8ull << 30,   // 1.85 GB of graphics work memory does not fit in the retail pool
     .init_counts = g_ryza2_inits,
     .init_count_n = 3,

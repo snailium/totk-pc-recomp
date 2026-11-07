@@ -10,6 +10,7 @@ static const RTTarget g_totk = {
     .guest_main = rt_boot_guest_main_init_start,
     .sdk_flags = 0,
     .romfs_image_name = "romfs.bin",
+    .mount_aliases = NULL, // the RomFS is opened as "rom:"
     .pool_min = 0,         // the retail pool
     .init_counts = NULL,   // the shared TotK tables in boot.c
     .init_count_n = 0,
