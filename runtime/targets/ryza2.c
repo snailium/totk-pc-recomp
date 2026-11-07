@@ -88,6 +88,8 @@ static const RTTarget g_ryza2 = {
     .init_counts = g_ryza2_inits,
     .init_count_n = 3,
     .present_interval_override = 1,
+    .default_replay_async = 1,
+    .skip_queue_finish = 1,
 };
 
 const RTTarget *rt_target(void) { return &g_ryza2; }

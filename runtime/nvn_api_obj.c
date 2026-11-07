@@ -662,6 +662,7 @@ NVN_API(nvnWindowInitialize) {
         return;
     }
     memcpy(o->tex, s->tex, sizeof o->tex);
+    if (!g_present_window) g_present_window = o;
     const tex_t *t0 = (const tex_t *)o->tex[0];
     NVN_LOG("WindowInitialize %d textures, interval %d, first %ux%u format %#x", o->ntex, o->interval,
             t0 ? t0->d.width : 0, t0 ? t0->d.height : 0, t0 ? t0->d.format : 0);

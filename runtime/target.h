@@ -49,6 +49,10 @@ typedef struct RTTarget {
     int init_count_n;
     // Present interval override: 0 = follow game (default), 1 = force 60 Hz interval, etc.
     int present_interval_override;
+    // Default replay async: 1 = default TOTK_REPLAY_ASYNC=1 for this target
+    int default_replay_async;
+    // Skip queue finish: 1 = skip nvnQueueFinish in render loop for this target (prevents CPU-GPU lockstep stall)
+    int skip_queue_finish;
     // Function hooks: replaces indirect dispatch table slots at boot time without instruction patching.
     const RTFuncHook *func_hooks;
     int func_hook_n;
