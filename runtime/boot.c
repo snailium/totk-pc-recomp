@@ -322,6 +322,10 @@ void rt_frame_presented(const tex_t *t, uint64_t n) {
 // ---- steps 9-14
 static uint64_t cb_addr[3];
 
+// The three callbacks an entry takes (loader_ready, module_inits, module_finis), for a title whose entry is called with
+// the same arguments as nn::init::Start.
+void rt_boot_entry_callbacks(uint64_t out[3]) { for (int i = 0; i < 3; i++) out[i] = cb_addr[i]; }
+
 // The newest SDK's entry, named for the target layer (target.h): nn::init::Start then nnMain.
 void rt_boot_guest_main_init_start(Cpu *c) {
     uint32_t handle = kern_main_thread(&c);

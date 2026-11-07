@@ -475,6 +475,24 @@ static void ov_six_state(Cpu *c) {
     ret_x(c, 0);
 }
 
+// nn::Result nn::hid::Initialize(): on hardware this opens the "hid" service session. The port answers every hid call it
+// supports at the library level (the overrides below), so the session is not needed; older titles call this before any
+// of them, and without it they would ask the service manager for a service the port does not serve.
+static void ov_hid_initialize(Cpu *c) {
+    (void)c;
+    rt_log("hid: initialize: the library functions are served directly, no service session");
+    ret_x(c, 0);
+}
+HOST_OVERRIDE("_ZN2nn3hid10InitializeEv", ov_hid_initialize);
+// nn::Result nn::hid::SetNpadHandheldActivationMode(NpadHandheldActivationMode): a service call on hardware, and older
+// titles make it during start-up. The port has one controller on a console that is never handheld, so it is recorded and
+// nothing changes.
+static void ov_handheld_mode(Cpu *c) {
+    static int said;
+    if (!said++) rt_log("hid: handheld activation mode %d: the port is never handheld", (int)(int32_t)arg_x(c, 0));
+    ret_x(c, 0);
+}
+HOST_OVERRIDE("_ZN2nn3hid29SetNpadHandheldActivationModeENS0_26NpadHandheldActivationModeE", ov_handheld_mode);
 HOST_OVERRIDE("_ZN2nn3hid14InitializeNpadEv", ov_initialize_npad);
 HOST_OVERRIDE("_ZN2nn3hid22SetSupportedNpadIdTypeEPKjm", ov_supported_ids);
 HOST_OVERRIDE("_ZN2nn3hid24SetSupportedNpadStyleSetENS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", ov_supported_styles);

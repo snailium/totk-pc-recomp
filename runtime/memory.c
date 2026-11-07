@@ -14,6 +14,7 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "target.h"
 #include "layout.h"
 #include "platform/platform.h"
 
@@ -250,7 +251,11 @@ void mem_init(void) {
         .alias = {alias, ALIAS_SIZE},
         .kernel = {RT_KERNEL_BASE, RT_KERNEL_SIZE},
         .hostfn = {RT_HOSTFN_BASE, RT_HOSTFN_SIZE},
-        .pool = pool ? strtoull(pool, NULL, 0) : DEFAULT_POOL + res_heap_extra_bytes() + res_tex_heap_extra_bytes(),
+        // The title's own floor, when it asks for more than the retail TotK pool (Ryza 2 allocates 1.85 GB of graphics
+        // work memory, which does not fit beside the image in the default).
+        .pool = pool ? strtoull(pool, NULL, 0)
+                     : (rt_target()->pool_min > DEFAULT_POOL ? rt_target()->pool_min : DEFAULT_POOL) +
+                           res_heap_extra_bytes() + res_tex_heap_extra_bytes(),
     };
     if (!L.pool) rt_fatal("memory: TOTK_APP_POOL is 0");
 }
@@ -286,6 +291,8 @@ uint32_t mem_set_heap_size(uint64_t size, uint64_t *addr) {
     plat_mutex_lock(&lock);
     if (size > L.heap.size || size % 0x200000 || size + image_bytes() > L.pool) {
         plat_mutex_unlock(&lock);
+        rt_log("mem: SetHeapSize %#llx refused: cap %#llx, image %#llx, pool %#llx", (unsigned long long)size,
+               (unsigned long long)L.heap.size, (unsigned long long)image_bytes(), (unsigned long long)L.pool);
         return R_INVALID_STATE;
     }
     if (size > heap_size) commit(L.heap.base + heap_size, size - heap_size, "heap");
