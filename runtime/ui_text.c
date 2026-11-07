@@ -8,6 +8,7 @@
 #include "cfg.h"
 #include "ov.h"
 #include "platform/platform.h"
+#include "target.h"
 #include "ui_text.h"
 
 typedef struct { const char *lang; const char *const *text; } Row;
@@ -2093,6 +2094,17 @@ const char *ui_text_lang(const char *code) {
 
 // Every game language: the Mals files EUen/USen, USfr/EUfr, USes/EUes ship in both builds; USpt only from 1.4.3.
 int ui_text_game_langs(int game_version, UiGameLang *out, int max) {
+    if (rt_target() && !strcmp(rt_target()->name, "ryza2")) {
+        static const struct { const char *code; UiTextId name; } ryza_langs[] = {
+            {"zh-Hans", UI_MENU_LANGNAME_ZH_HANS},
+            {"zh-Hant", UI_MENU_LANGNAME_ZH_HANT},
+            {"ja", UI_MENU_LANGNAME_JA},
+        };
+        int n = 0;
+        for (size_t i = 0; i < sizeof ryza_langs / sizeof *ryza_langs && n < max; i++)
+            out[n++] = (UiGameLang){ryza_langs[i].code, ryza_langs[i].name};
+        return n;
+    }
     static const struct { const char *code; UiTextId name; int since; } all[] = {
         {"en-US", UI_MENU_LANGNAME_EN, 0}, {"en-GB", UI_MENU_LANGNAME_EN_GB, 0}, {"ja", UI_MENU_LANGNAME_JA, 0},
         {"fr", UI_MENU_LANGNAME_FR, 0}, {"fr-CA", UI_MENU_LANGNAME_FR_CA, 0}, {"de", UI_MENU_LANGNAME_DE, 0},

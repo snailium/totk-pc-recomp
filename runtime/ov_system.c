@@ -903,11 +903,29 @@ HOST_OVERRIDE("_ZN2nn2oe17SetCopyrightImageEPKvmiiiiNS0_16WindowOriginModeE", ov
 // nn::Result nn::settings::detail::MakeLanguageCode(LanguageCode *out, Language language): on hardware this asks the "set"
 // service; the port answers from the same table the rest of the system layer uses. A LanguageCode is eight bytes.
 static void ov_make_language_code(Cpu *c) {
-    static const char *codes[16] = {"en-US", "en-GB", "fr",     "de",     "es",     "es-419", "it",   "nl",
-                                    "fr-CA", "pt",    "pt-BR",  "ru",     "ja",     "zh-Hant", "zh-Hans", "ko"};
+    static const char *const codes[] = {
+        "ja",       // 0: nn::settings::Language_Japanese
+        "en-US",    // 1: nn::settings::Language_AmericanEnglish
+        "fr",       // 2: nn::settings::Language_French
+        "de",       // 3: nn::settings::Language_German
+        "it",       // 4: nn::settings::Language_Italian
+        "es",       // 5: nn::settings::Language_Spanish
+        "zh-CN",    // 6: nn::settings::Language_Chinese
+        "ko",       // 7: nn::settings::Language_Korean
+        "nl",       // 8: nn::settings::Language_Dutch
+        "pt",       // 9: nn::settings::Language_Portuguese
+        "ru",       // 10: nn::settings::Language_Russian
+        "zh-TW",    // 11: nn::settings::Language_Taiwanese
+        "en-GB",    // 12: nn::settings::Language_BritishEnglish
+        "fr-CA",    // 13: nn::settings::Language_CanadianFrench
+        "es-419",   // 14: nn::settings::Language_LatinAmericanSpanish
+        "zh-Hans",  // 15: nn::settings::Language_SimplifiedChinese
+        "zh-Hant",  // 16: nn::settings::Language_TraditionalChinese
+        "pt-BR",    // 17: nn::settings::Language_BrazilianPortuguese
+    };
     uint64_t out = arg_x(c, 0);
     int lang = (int32_t)arg_x(c, 1);
-    const char *code = (lang >= 0 && lang < 16) ? codes[lang] : "en-US";
+    const char *code = (lang >= 0 && lang < (int)(sizeof codes / sizeof *codes)) ? codes[lang] : "en-US";
     if (out) {
         memset((void *)(uintptr_t)out, 0, 8);
         memcpy((void *)(uintptr_t)out, code, strlen(code));
