@@ -396,6 +396,8 @@ static void crash_handler(const PlatCrash *x) {
     }
     crash_memory(x, c);
     crash_compound_shape(c);
+    mutex_trace_dump();
+    kern_dump_waiters();
     kern_free_cores_note();
     fflush(stderr);
     plat_exit(71);
