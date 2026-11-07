@@ -18,6 +18,7 @@
 #include "nvn_hmap.h"
 #include "nvn_tex.h"
 #include "platform/platform.h"
+#include "target.h"
 
 // ---------- Descriptor pools
 // NVNboolean nvnTexturePoolInitialize(NVNtexturePool *tp, const NVNmemoryPool *p, ptrdiff_t offset, int n)
@@ -621,11 +622,28 @@ NVN_API(nvnQueueAcquireTexture) {
     ret_x(c, NVN_WINDOW_ACQUIRE_TEXTURE_RESULT_SUCCESS);
 }
 
+static int target_present_interval(void) {
+    const char *e = cfg_get("TOTK_PRESENT_INTERVAL");
+    if (!e || !*e) e = cfg_get("PRESENT_INTERVAL");
+    if (e && *e) {
+        int v = atoi(e);
+        if (v > 0) return v;
+    }
+    const RTTarget *t = rt_target();
+    if (t && t->present_interval_override > 0) return t->present_interval_override;
+    return 0;
+}
+
 NVN_API(nvnWindowGetNumActiveTextures) {
     const win_t *w = WN(c);
     ret_x(c, (uint32_t)(w->active ? w->active : w->ntex));
 }
-NVN_API(nvnWindowBuilderSetPresentInterval) { WB(c)->interval = (int)arg_x(c, 1); }
+NVN_API(nvnWindowBuilderSetPresentInterval) {
+    int v = (int)arg_x(c, 1);
+    int ov = target_present_interval();
+    if (ov > 0) v = ov;
+    WB(c)->interval = v;
+}
 // NVNboolean nvnWindowInitialize(NVNwindow *w, const NVNwindowBuilder *b)
 NVN_API(nvnWindowInitialize) {
     win_t *o = arg_p(c, 0);
@@ -635,6 +653,8 @@ NVN_API(nvnWindowInitialize) {
     o->native = s->native;
     o->ntex = s->ntex;
     o->interval = s->interval;
+    int ov = target_present_interval();
+    if (ov > 0) o->interval = ov;
     o->active = s->active ? s->active : s->ntex;
     if (o->ntex < 2 || o->ntex > 4 || o->active < 2 || o->active > o->ntex) {
         rt_log("nvn: WindowInitialize with %d textures, %d active", o->ntex, o->active);
@@ -652,6 +672,8 @@ NVN_API(nvnWindowFinalize) { (void)c; }
 NVN_API(nvnWindowSetPresentInterval) {
     win_t *o = WN(c);
     int v = (int)arg_x(c, 1);
+    int ov = target_present_interval();
+    if (ov > 0) v = ov;
     if (o->interval != v) NVN_LOG("present interval %d -> %d", o->interval, v);
     o->interval = v;
 }
@@ -672,7 +694,15 @@ NVN_API(nvnWindowSetCrop) {
 #define VSYNC_HZ 60ull
 static uint64_t present_period(const win_t *o) {
     if (frame_step_realtime()) return frame_step_cap_ns();
-    return (o->interval > 0 ? (uint64_t)o->interval : 1ull) * 1000000000ull / VSYNC_HZ;
+    int iv = o->interval;
+    int ov = target_present_interval();
+    if (ov > 0) iv = ov;
+    if (iv == 1) {
+        const char *lim = cfg_get("TOTK_FPS_LIMIT");
+        if (!lim || !*lim) lim = cfg_get("FPS_LIMIT");
+        if (lim && *lim && strcmp(lim, "60")) return frame_step_cap_ns();
+    }
+    return (iv > 0 ? (uint64_t)iv : 1ull) * 1000000000ull / VSYNC_HZ;
 }
 
 // MacNativeGames nvn_pace.h: the present slot is the previous slot plus one period. Early: wait for the slot. Late by

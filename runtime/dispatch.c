@@ -13,6 +13,7 @@
 #include "dispatch.h"
 #include "host.h"
 #include "platform/platform.h"
+#include "target.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -161,6 +162,29 @@ void rt_dispatch_init(const RtModule *mods, int count) {
             slot[(m->addrs[k] - lo) >> 2] = (uint32_t)((uintptr_t)m->fns[k] - anchor);
         g_functions += m->count;
     }
+
+    const RTTarget *tgt = rt_target();
+    if (tgt && tgt->func_hooks) {
+        for (int h = 0; h < tgt->func_hook_n; h++) {
+            const RTFuncHook *hook = &tgt->func_hooks[h];
+            const RtModule *m = NULL;
+            for (int i = 0; i < g_nmods; i++)
+                if (!strcmp(g_mods[i]->name, hook->module)) { m = g_mods[i]; break; }
+            if (!m) continue;
+            uint64_t a = m->base + hook->offset;
+            uint64_t idx = (a - lo) >> 2;
+            if (idx < slots) {
+                if (hook->orig_out) {
+                    uint32_t prev = slot[idx];
+                    *hook->orig_out = prev ? (GuestFn)(anchor + prev) : NULL;
+                }
+                slot[idx] = (uint32_t)((uintptr_t)hook->hook - anchor);
+                rt_log("dispatch: hooked %s+%#llx (%#llx) -> %p", hook->module,
+                       (unsigned long long)hook->offset, (unsigned long long)a, (void *)hook->hook);
+            }
+        }
+    }
+
     table_seal(slot, bytes);
 
     g_table_bytes = bytes;
