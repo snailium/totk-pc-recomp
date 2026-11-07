@@ -52,7 +52,6 @@ void kern_main_thread_attrs(uint64_t stack, int prio, int core) {
     g_main_prio = prio;
     g_main_core = core;
 }
-}
 #define FIBER_MAX 1024
 
 enum { O_FREE, O_THREAD, O_EVENT_R, O_EVENT_W, O_SESSION = KERN_SESSION, O_TMEM = KERN_TMEM };
@@ -2243,6 +2242,15 @@ void *kern_handle_get(uint32_t h, int kind) {
     void *o = h_peek(h, kind);
     unlock();
     return o;
+}
+
+// Diagnostics: does this handle name an event, and which end? Used to follow an event from its creator to the service
+// that is supposed to signal it.
+int kern_handle_event_kind(uint32_t h) {
+    lock();
+    int kind = h_peek(h, O_EVENT_W) ? 1 : h_peek(h, O_EVENT_R) ? 2 : 0;
+    unlock();
+    return kind;
 }
 
 uint32_t kern_event_new(void) {
