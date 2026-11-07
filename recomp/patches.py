@@ -101,7 +101,7 @@ class Table:
     from here (for_module, picks_for, spins_for, hooks_for) is in the lift cache's key (recomp/gen.py chunk_key); a new
     kind of line the Emitter reads must go there too."""
 
-    def __init__(self, sets=(), sites=None, page=0, spins=None, hooks=None, ordered=(), plugins=None):
+    def __init__(self, sets=(), sites=None, page=0, spins=None, hooks=None, ordered=(), plugins=None, patterns=None):
         self.sets = list(sets)
         self.sites = sites or {}
         self.page = page
@@ -113,6 +113,7 @@ class Table:
         # plugin lines
         self.plugins = plugins or {}
         self.bases = {}            # {module: base} of the layout load() read
+        self.patterns = patterns or {}   # {module: [(set index, pattern_hex, repl, where)]}
 
     def plugin_inputs(self, name):
         """What the lift of module name takes from its plugin lines (for the lift cache's key), or None."""
@@ -182,9 +183,56 @@ class Table:
         return out
 
 
+def parse_pattern(pat_str):
+    pat = pat_str.strip()
+    tokens = pat.split() if ' ' in pat else [pat[i:i + 2] for i in range(0, len(pat), 2)]
+    out = []
+    for t in tokens:
+        if t in ('??', '?'):
+            out.append(None)
+        else:
+            out.append(int(t, 16))
+    return out
+
+
+def scan_pattern(data, text_off, text_len, pattern):
+    m = len(pattern)
+    matches = []
+    for i in range(text_off, text_off + text_len - m + 1, 4):
+        match = True
+        for j in range(m):
+            if pattern[j] is not None and data[i + j] != pattern[j]:
+                match = False
+                break
+        if match:
+            matches.append(i)
+    return matches
+
+
+def resolve_patterns(table, mod, name):
+    if not table.patterns or name not in table.patterns:
+        return
+    text_off = mod.nso.text[0]
+    text_len = mod.nso.text[1]
+    data = mod.image
+    for set_idx, pat_hex, repl, where in table.patterns[name]:
+        pattern = parse_pattern(pat_hex)
+        matches = scan_pattern(data, text_off, text_len, pattern)
+        if not matches:
+            raise PatchError(f'{where}: pattern {pat_hex} not found in {name}')
+        if len(matches) > 1:
+            raise PatchError(f'{where}: pattern {pat_hex} ambiguous ({len(matches)} matches in {name})')
+        off = matches[0] - text_off
+        orig = mod.word(mod.base + off)
+        alts = table.sites.setdefault(name, {}).setdefault(off, [])
+        if any(k == set_idx for k, _, _ in alts):
+            raise PatchError(f'{where}: {name}+{off:#x} patched twice by set {table.sets[set_idx][0]}')
+        alts.append((set_idx, repl, orig))
+
+
 def load(path, mods):
     """Table from a patch file; mods is layout() output [(name, base, size)]."""
-    sets, index, sites, spins, hooks, ordered, plugins = [], {}, {}, {}, {}, set(), {}
+    sets, index, sites, spins, hooks, ordered, plugins, patterns = [], {}, {}, {}, {}, set(), {}, {}
     bases = {n: (b, s) for n, b, s in mods}
     for no, raw in enumerate(Path(path).read_text(encoding='utf-8').splitlines(), 1):
         f = raw.split('#', 1)[0].split()
@@ -198,6 +246,19 @@ def load(path, mods):
             if len(f) == 5:
                 ordered.add(len(sets))
             sets.append((f[1], f[2], int(f[3])))
+        elif f[0] == 'pattern' and len(f) >= 5:
+            if f[1] not in index:
+                raise PatchError(f'{where}: unknown set {f[1]}')
+            if f[2] not in bases:
+                raise PatchError(f'{where}: module {f[2]} not in the layout')
+            pat_hex = f[3]
+            repl = []
+            for w in f[4:]:
+                if w.startswith('@page:x'):
+                    repl.append(('page', int(w[7:])))
+                else:
+                    repl.append(int(w, 16))
+            patterns.setdefault(f[2], []).append((index[f[1]], pat_hex, repl, where))
         elif f[0] == 'site' and len(f) >= 6:
             if f[1] not in index:
                 raise PatchError(f'{where}: unknown set {f[1]}')
@@ -250,7 +311,7 @@ def load(path, mods):
     nxt = min((b for _, b, _ in mods if b > base), default=None)
     if nxt is not None and page + PAGE > nxt:
         raise PatchError(f'no room for the patch page after main ({page:#x})')
-    table = Table(sets, sites, page, spins, hooks, ordered, plugins)
+    table = Table(sets, sites, page, spins, hooks, ordered, plugins, patterns)
     table.bases = {n: b for n, (b, _) in bases.items()}
     return table
 
@@ -284,6 +345,7 @@ def plugin_line(f, where, index, bases, plugins):
 
 def check(table, mod, name):
     """Stops on a site whose original word differs from the module's."""
+    resolve_patterns(table, mod, name)
     for off, [(_, _, want), *_] in table.sites.get(name, {}).items():
         a = mod.base + off
         if not mod.in_text(a):
