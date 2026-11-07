@@ -409,8 +409,8 @@ typedef struct {
 
 // The previous draw's shaders and what they were looked up from (prepare_draw).
 typedef struct {
-    const prog_t *prog;
-    uint64_t serial;
+    const prog_t *prog[2];               // the vertex and fragment programs of the memo (separate bindings)
+    uint64_t serial[2];
     uint32_t gen, tex_serial;
     uint64_t pipe_gen;                   // VkExec.pipe_gen when pipe was copied
     uint64_t tex[2][32], img[2][32];
@@ -1208,14 +1208,15 @@ static const GfxShader *shader_for(VkExec *ex, int st, int *present, int *pendin
     uint32_t len;
     *present = 0;
     if (pending) *pending = 0;
-    if (!ex->prog) return NULL;
-    if (!find_stage(ex->draw, ex->prog, st, &ctl, &code, &len)) {
-        wt_learn(ex->prog->serial, st, NULL);
+    const prog_t *p = (st >= 0 && st < 6 && ex->progs[st]) ? ex->progs[st] : ex->prog;
+    if (!p) return NULL;
+    if (!find_stage(D, p, st, &ctl, &code, &len)) {
+        wt_learn(p->serial, st, NULL);
         return NULL;
     }
     *present = 1;
     GfxShaderAnswers a;
-    uint64_t serial = ex->prog->serial;
+    uint64_t serial = p->serial;
     answers_for(ex, st, ctl, slot_mask_of(D, serial, st), &a);
     a.mvprev = (uint8_t)(sf_mvprev && st == NVN_STAGE_VS);
     ShaderEnt *set = NULL;
@@ -1403,10 +1404,11 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
     uint64_t max = LIM.ubo_max, align = LIM.ubo_align;
     VkDescriptorBufferInfo bi;
     if (slot == 0 && c0_on()) return c0_info(ex, st);
-    if (slot == 1 && ex->prog) {   // compiler constants stored after the shader code
+    if (slot == 1) {   // compiler constants stored after the shader code
+        const prog_t *p = (st >= 0 && st < 6 && ex->progs[st]) ? ex->progs[st] : ex->prog;
         const uint8_t *ctl, *code;
         uint32_t len, c1;
-        if (find_stage(ex->draw, ex->prog, st, &ctl, &code, &len)) {
+        if (p && find_stage(ex->draw, p, st, &ctl, &code, &len)) {
             memcpy(&c1, ctl + 0x700, 4);
             if (c1 < len && bind_range(ex, (uint64_t)(uintptr_t)code + c1, len - c1, align, max, VK_MUSE_UBO, 0, &bi))
                 return bi;
@@ -2411,8 +2413,12 @@ static int bind_sig(const VkExec *ex, const VkPipeInfo *info) {
     uint32_t n = 0;
 #define PUT(v) do { uint64_t v_ = (uint64_t)(v); diff |= h[n] ^ v_; h[n++] = v_; } while (0)
     PUT((uintptr_t)info);
-    PUT((uintptr_t)ex->prog);
-    PUT(ex->prog->serial);
+    const prog_t *pvs = ex->progs[NVN_STAGE_VS] ? ex->progs[NVN_STAGE_VS] : ex->prog;
+    const prog_t *pfs = ex->progs[NVN_STAGE_FS] ? ex->progs[NVN_STAGE_FS] : ex->prog;
+    PUT((uintptr_t)pvs);
+    PUT(pvs ? pvs->serial : 0);
+    PUT((uintptr_t)pfs);
+    PUT(pfs ? pfs->serial : 0);
     PUT((uint64_t)vk_texture_slots_gen() << 32 | vk_texture_epoch());
     PUT((uint64_t)vk_sampler_gen() << 32 | (uint32_t)ex->nfbl);
     PUT(ex->chunked ? ex->pass_serial : 0);
@@ -2950,9 +2956,12 @@ static int pipe_skip_mode(void) {
 // texture type in answers_for, and stops on a difference.
 // tex_serial (bumped by every texture and image bind) equal to the key's means the handles were not rebound since
 // they were compared, so the 1 KiB compare is skipped; a rebind to the same handles still matches by the compare.
-
 static void memo_key(const VkExec *ex, uint32_t gen, MemoKey *k) {
-    k->prog = ex->prog, k->serial = ex->prog->serial, k->gen = gen, k->tex_serial = ex->tex_serial;
+    k->prog[0] = ex->progs[NVN_STAGE_VS] ? ex->progs[NVN_STAGE_VS] : ex->prog;
+    k->serial[0] = k->prog[0] ? k->prog[0]->serial : 0;
+    k->prog[1] = ex->progs[NVN_STAGE_FS] ? ex->progs[NVN_STAGE_FS] : ex->prog;
+    k->serial[1] = k->prog[1] ? k->prog[1]->serial : 0;
+    k->gen = gen, k->tex_serial = ex->tex_serial;
     k->pipe_gen = ex->pipe_gen;
     memcpy(k->tex[0], ex->tex[NVN_STAGE_VS], sizeof k->tex[0]), memcpy(k->tex[1], ex->tex[NVN_STAGE_FS], sizeof k->tex[1]);
     memcpy(k->img[0], ex->img[NVN_STAGE_VS], sizeof k->img[0]), memcpy(k->img[1], ex->img[NVN_STAGE_FS], sizeof k->img[1]);
@@ -2965,7 +2974,11 @@ static void bi_mismatch(VkExec *ex, int kind, const char *fmt, ...);
 // TOTK_BIND_INC: pipe equals the key's while pipe_gen does (no write changed it since the copy), so the 360-byte
 // compare is skipped; check compares anyway and counts a difference the generation missed.
 static int memo_match(VkExec *ex, uint32_t gen, MemoKey *k) {
-    if (k->prog != ex->prog || k->serial != ex->prog->serial || k->gen != gen) return 0;
+    const prog_t *p0 = ex->progs[NVN_STAGE_VS] ? ex->progs[NVN_STAGE_VS] : ex->prog;
+    const prog_t *p1 = ex->progs[NVN_STAGE_FS] ? ex->progs[NVN_STAGE_FS] : ex->prog;
+    if (k->prog[0] != p0 || (p0 && k->serial[0] != p0->serial)) return 0;
+    if (k->prog[1] != p1 || (p1 && k->serial[1] != p1->serial)) return 0;
+    if (k->gen != gen) return 0;
     int bim = bind_inc_mode(), same_gen = k->pipe_gen == ex->pipe_gen;
     if (!(bim == 1 && same_gen && !ex->chunked) && MX_NE(&k->pipe, &ex->pipe, sizeof k->pipe)) {
         if (bim == 2 && same_gen && !ex->chunked) bi_mismatch(ex, BIM_PIPE, "shader memo: bound state changed without its generation");
@@ -3209,7 +3222,9 @@ static void bi_done(VkExec *ex, const VkPipeInfo *info, const VkPipeState *s, co
     L->sx[0] = s->prim, L->sx[1] = s->prim_restart, L->sx[2] = s->feedback, L->sx[3] = s->depth_minus_w;
     L->vmask = D->B.vmask, L->vgen = D->B.vgen;
     L->vused = vb_used_on() && D->B.st_valid ? D->B.vmask : VK_PIPE_ALL_BINDINGS;
-    L->sm_ok = (uint8_t)(D->SM.valid && D->SM.vs == s->vs && D->SM.fs == s->fs && D->SM.k.prog == ex->prog);
+    L->sm_ok = (uint8_t)(D->SM.valid && D->SM.vs == s->vs && D->SM.fs == s->fs &&
+                         D->SM.k.prog[0] == (ex->progs[NVN_STAGE_VS] ? ex->progs[NVN_STAGE_VS] : ex->prog) &&
+                         D->SM.k.prog[1] == (ex->progs[NVN_STAGE_FS] ? ex->progs[NVN_STAGE_FS] : ex->prog));
     L->fb_ok = (uint8_t)(s->fs && ex->fb_fs == s->fs && ex->fb_serial == ex->tex_serial && ex->fb_pass == ex->pass_serial);
     memset(&ex->dirt, 0, sizeof ex->dirt);
     D->B.bi_valid = 1;
@@ -3231,7 +3246,8 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     vk_exec_pass_begin(ex);
     VkRect2D sc = vk_exec_scissor(ex);
     if (!sc.extent.width || !sc.extent.height) return 0;
-    if (!ex->prog) return warn_once(W_PROGRAM, "a draw without a bound program is skipped"), 0;
+    const prog_t *pvs = ex->progs[NVN_STAGE_VS] ? ex->progs[NVN_STAGE_VS] : ex->prog;
+    if (!pvs) return warn_once(W_PROGRAM, "a draw without a bound program is skipped"), 0;
     int has_vs, has_fs, vs_wait = 0, fs_wait = 0, memo = shader_memo_on();
     const GfxShader *vs, *fs;
     // Before shader_for, whose lookups may bump it. In a chunk per pass too, as in bind_sig.
@@ -3260,7 +3276,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
             int hv, hf, wv, wf;
             const GfxShader *v2 = shader_for(ex, NVN_STAGE_VS, &hv, &wv, 0), *f2 = shader_for(ex, NVN_STAGE_FS, &hf, &wf, 0);
             if (v2 != vs || f2 != fs || hf != has_fs || wv || wf)
-                rt_fatal("vk_exec: shader memo of program %llu differs from the lookup", (unsigned long long)ex->prog->serial);
+                rt_fatal("vk_exec: shader memo differs from the lookup");
         }
     } else {
         D->SM.valid = 0;
@@ -4336,7 +4352,8 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
 static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     VkExecDraw *D = ex->draw;
     if (d->x <= 0 || d->y <= 0 || d->z <= 0) return;
-    if (!ex->prog) return warn_once(W_PROGRAM, "a dispatch without a bound program is skipped");
+    const prog_t *pcs = ex->progs[NVN_STAGE_CS] ? ex->progs[NVN_STAGE_CS] : ex->prog;
+    if (!pcs) return warn_once(W_PROGRAM, "a dispatch without a bound program is skipped");
     vk_contact_flush(ex);
     cb_res(ex);
     dummies_init();
@@ -4363,7 +4380,8 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
 // so they are copied there on the GPU, into a c0 range no other dispatch uses, before the dispatch.
 static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
     VkExecDraw *D = ex->draw;
-    if (!ex->prog) return warn_once(W_PROGRAM, "a dispatch without a bound program is skipped");
+    const prog_t *pcs = ex->progs[NVN_STAGE_CS] ? ex->progs[NVN_STAGE_CS] : ex->prog;
+    if (!pcs) return warn_once(W_PROGRAM, "a dispatch without a bound program is skipped");
     VkMemSpan ip;
     if (!vk_mem_resolve(d->ind, sizeof(VkDispatchIndirectCommand), &ip) || ip.offset % 4)
         return warn_once(W_INDIRECT, "indirect dispatch arguments at %#llx are not backed or not aligned: skipped", (unsigned long long)d->ind);
@@ -4704,6 +4722,12 @@ int vk_exec_bind(VkExec *ex, uint32_t op, const void *payload) {
         const p_bind_program *b = payload;
         if (ex->prog != b->prog || ex->prog_stages != b->stages) ex->dirt.prog = 1;
         ex->prog = b->prog, ex->prog_stages = b->stages;
+        if (b->stages) {
+            for (int s = 0; s < 6; s++)
+                if (b->stages & (1 << s)) ex->progs[s] = b->prog;
+        } else {
+            for (int s = 0; s < 6; s++) ex->progs[s] = b->prog;   // a NULL unbinding clears every stage
+        }
         gen = 1;
         break;
     }
