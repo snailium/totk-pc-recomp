@@ -33,8 +33,12 @@ static void ov_devtools_allocator(Cpu *c) { set_allocator(c, &nv.devtools); }
 // void nv::InitializeGraphics(void *memory, size_t size)
 static void ov_initialize_graphics(Cpu *c) {
     uint64_t mem = arg_x(c, 0), size = arg_x(c, 1);
-    if (!mem || !size) rt_fatal("nv::InitializeGraphics: no graphics work memory (%#llx, %#llx)", (unsigned long long)mem,
-                                (unsigned long long)size);
+    // The size is what matters. Older titles pass no pointer and expect the block to come from the allocator they
+    // registered with nv::SetGraphicsAllocator; the port replays NVN onto Vulkan and never touches it, so the request is
+    // recorded and nothing else.
+    if (!size) rt_fatal("nv::InitializeGraphics: no graphics work memory size (%#llx, %#llx)", (unsigned long long)mem,
+                        (unsigned long long)size);
+    if (!mem) rt_log("nv: graphics work memory: %#llx asked for without a pointer; the port allocates nothing", (unsigned long long)size);
     plat_mutex_lock(&lock);
     nv.memory = mem;
     nv.memory_size = size;

@@ -487,6 +487,22 @@ NVN_API(nvnSyncWait) {
     if (ok) b->cpu_synced(s->fence);
     ret_x(c, ok ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED);
 }
+// void nvnDeviceApplyDeferredFinalizes(NVNdevice *d, int num): the deferred finalizers are host-side here, so there is
+// nothing to apply. Older NVN titles look this proc up during start-up.
+NVN_API(nvnDeviceApplyDeferredFinalizes) { (void)c; }
+
+// void nvnQueueWaitSync(NVNqueue *q, NVNsync *s): block until every command the queue submitted before the sync has
+// completed. Older titles call it before they reuse a buffer, where the newer ones wait on the window instead.
+NVN_API(nvnQueueWaitSync) {
+    const sync_t *s = arg_p(c, 1);
+    if (!s->fenced) return;
+    const GfxBackend *b = gfx_backend();
+    if (b->fence_done() >= s->fence) { b->cpu_synced(s->fence); return; }
+    NVN_BLOCKING();
+    b->fence_wait(s->fence, UINT64_MAX);
+    b->cpu_synced(s->fence);
+}
+
 // void nvnEventBuilderSetDefaults(NVNeventBuilder *b)
 NVN_API(nvnEventBuilderSetDefaults) { memset(arg_p(c, 0), 0, sizeof(ev_builder_t)); }
 // void nvnEventBuilderSetStorage(NVNeventBuilder *b, const NVNmemoryPool *p, int64_t offset)

@@ -15,7 +15,9 @@ ROOT = Path(__file__).resolve().parent.parent
 NVN_DIR = ROOT / "refs/MacNativeGames/games/totk/third_party/d2r_gfx/gfx/nvn"
 OUT = ROOT / "runtime/nvn_procs.inc"
 
-NOT_LOADED = {"nvnDeviceApplyDeferredFinalizes", "nvnQueueAcquireTexture"}
+# Older NVN titles load these two, TotK never asks for them: the runtime implements both (nvn_api_core.c,
+# nvn_api_obj.c), so they belong in the table.
+NOT_LOADED = set()
 SUBSDK0 = [  # section 0.1: asked by the movie library through nvnDeviceGetProcAddress
     "nvnDeviceGetProcAddress",
     "nvnSyncFinalize",

@@ -709,6 +709,13 @@ NVN_API(nvnCommandBufferReportCounter) {
 }
 // void nvnCommandBufferCopyBufferToBuffer(NVNcommandBuffer *cmd, NVNbufferAddress src, NVNbufferAddress dst,
 // size_t size, int flags)
+// void nvnCommandBufferSetCopyImageStride(NVNcommandBuffer *cb, int stride): the stride the next copy-image command uses.
+// The replay works on the image descriptors themselves, so the stride is recorded only for the log.
+NVN_API(nvnCommandBufferSetCopyImageStride) {
+    static int said;
+    if (!said++) rt_log("nvn: copy image stride %d recorded", (int)arg_x(c, 1));
+}
+
 NVN_API(nvnCommandBufferCopyBufferToBuffer) {
     *REC(cmd_of(c), OP_COPY_B2B, p_copy_b2b) = (p_copy_b2b){arg_x(c, 1), arg_x(c, 2), arg_x(c, 3)};
 }
