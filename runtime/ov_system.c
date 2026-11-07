@@ -154,12 +154,26 @@ static void ov_make_language_code(Cpu *c) {
 
 static void ov_oe_initialize(Cpu *c) { (void)c; rt_log("oe: application environment: a local host process"); }
 
+// The configuration each performance mode asks for: recorded when the title sets one, and answered from here by
+// nn::apm's getter, which otherwise reaches the apm service and faults on the missing reply. Older titles (Ryza 2) call
+// the apm getter directly, before any service of theirs is up.
+static uint32_t perf_config[2] = {0x10000, 0x20000};
+
 // void SetPerformanceConfiguration(PerformanceMode mode, int config)
 static void ov_performance_config(Cpu *c) {
     int64_t mode = (int32_t)arg_x(c, 0);
     if (mode < 0 || mode > 1) rt_fatal("nn::oe::SetPerformanceConfiguration: invalid mode %lld", (long long)mode);
+    perf_config[mode] = (uint32_t)arg_x(c, 1);
     rt_log("oe: performance request mode %lld configuration %#x: the host OS schedules the CPU", (long long)mode,
-           (uint32_t)arg_x(c, 1));
+           perf_config[mode]);
+}
+
+// unsigned int nn::apm::GetPerformanceConfiguration(PerformanceMode mode)
+static void ov_apm_performance_config(Cpu *c) {
+    int64_t mode = (int32_t)arg_x(c, 0);
+    if (mode < 0 || mode > 1) rt_fatal("nn::apm::GetPerformanceConfiguration: invalid mode %lld", (long long)mode);
+    rt_log("apm: performance configuration for mode %lld: %#x", (long long)mode, perf_config[mode]);
+    ret_x(c, perf_config[mode]);
 }
 
 // void SetCpuBoostMode(CpuBoostMode mode)
@@ -898,6 +912,46 @@ HOST_OVERRIDE("_ZN2nn2oe10InitializeEv", ov_oe_initialize);
 HOST_OVERRIDE("_ZN2nn2oe18GetDesiredLanguageEv", ov_desired_language);
 HOST_OVERRIDE("_ZN2nn2oe27SetPerformanceConfigurationENS0_15PerformanceModeEi", ov_performance_config);
 HOST_OVERRIDE("_ZN2nn2oe15SetCpuBoostModeENS0_12CpuBoostModeE", ov_cpu_boost);
+HOST_OVERRIDE("_ZN2nn3apm27GetPerformanceConfigurationENS0_15PerformanceModeE", ov_apm_performance_config);
+// nn::Result nn::oe::InitializeCopyrightFrameBuffer(void *buffer, size_t size): the SDK builds the copyright screen's
+// frame buffer here and keeps its own state for it; the port never draws that screen, so the request is recorded and the
+// lifted implementation (which reads that uninitialised state) is not run.
+static void ov_copyright_fb(Cpu *c) {
+    static int said;
+    if (!said++) rt_log("oe: copyright frame buffer %#llx+%#llx asked for; the port does not draw it",
+                        (unsigned long long)arg_x(c, 0), (unsigned long long)arg_x(c, 1));
+    ret_x(c, 0);
+}
+HOST_OVERRIDE("_ZN2nn2oe30InitializeCopyrightFrameBufferEPvm", ov_copyright_fb);
+// nn::Result nn::oe::SetCopyrightImage(const void *image, size_t size, int x, int y, int w, int h, WindowOriginMode):
+// its companion, with the same uninitialised state behind it.
+static void ov_copyright_image(Cpu *c) {
+    static int said;
+    if (!said++) rt_log("oe: copyright image %d x %d at (%d, %d) ignored; the port does not draw it", (int)arg_x(c, 4),
+                        (int)arg_x(c, 5), (int)arg_x(c, 2), (int)arg_x(c, 3));
+    ret_x(c, 0);
+}
+HOST_OVERRIDE("_ZN2nn2oe17SetCopyrightImageEPKvmiiiiNS0_16WindowOriginModeE", ov_copyright_image);
+// nn::Result nn::settings::detail::MakeLanguageCode(LanguageCode *out, Language language): on hardware this asks the "set"
+// service; the port answers from the same table the rest of the system layer uses. A LanguageCode is eight bytes.
+static void ov_make_language_code(Cpu *c) {
+    static const char *codes[16] = {"en-US", "en-GB", "fr",     "de",     "es",     "es-419", "it",   "nl",
+                                    "fr-CA", "pt",    "pt-BR",  "ru",     "ja",     "zh-Hant", "zh-Hans", "ko"};
+    uint64_t out = arg_x(c, 0);
+    int lang = (int32_t)arg_x(c, 1);
+    const char *code = (lang >= 0 && lang < 16) ? codes[lang] : "en-US";
+    if (out) {
+        memset((void *)(uintptr_t)out, 0, 8);
+        memcpy((void *)(uintptr_t)out, code, strlen(code));
+    }
+    ret_x(c, 0);
+}
+HOST_OVERRIDE("_ZN2nn8settings6detail16MakeLanguageCodeEPNS0_12LanguageCodeENS0_8LanguageE", ov_make_language_code);
+
+// int nn::aoc::CountAddOnContent(): the SDK asks before any service session exists, and the lifted function dereferences
+// its uninitialised service object; the port has no add-on content, so the answer is zero.
+static void ov_aoc_count(Cpu *c) { ret_x(c, 0); }
+HOST_OVERRIDE("_ZN2nn3aoc17CountAddOnContentEv", ov_aoc_count);
 HOST_OVERRIDE("_ZN2nn2oe16GetOperationModeEv", ov_operation_mode);
 HOST_OVERRIDE("_ZN2nn2oe18GetPerformanceModeEv", ov_performance_mode);
 HOST_OVERRIDE("_ZN2nn2oe20SetFocusHandlingModeENS0_17FocusHandlingModeE", ov_focus_mode);
