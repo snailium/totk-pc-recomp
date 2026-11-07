@@ -613,6 +613,23 @@ static void accumulate(Mixer *m, int buffer, const float *src, float vol, int fr
 }
 static int mix_valid(AudioRenderer *r, int32_t id) { return id >= 0 && id <= r->param.submix_count && r->mixes[id].in_use; }
 static int mix_depth(AudioRenderer *r, int id) {
+    if (!mix_valid(r, id)) return 0;
+    Mixer *m = r->mixer;
+    const AudrenMixIn *x = &r->mixes[id];
+    if (m && x->dest_splitter_id != SPLITTER_UNUSED && x->dest_splitter_id < (uint32_t)m->nsplit) {
+        const SplitInfo *s = &m->split[x->dest_splitter_id];
+        int max_d = 0;
+        for (int k = 0; k < s->ndest; k++) {
+            if (s->ids[k] >= 0 && s->ids[k] < m->ndest) {
+                SplitDest *d = &m->dest[s->ids[k]];
+                if (d->used && mix_valid(r, d->dest) && d->dest != id) {
+                    int sub_d = mix_depth(r, d->dest);
+                    if (sub_d > max_d) max_d = sub_d;
+                }
+            }
+        }
+        return max_d + 1;
+    }
     int d = 0;
     for (int guard = 0; id > 0 && guard < 64; guard++, d++) {
         if (!mix_valid(r, r->mixes[id].dest_mix_id)) return d + 1;
@@ -638,10 +655,12 @@ static void mix_aux(AudioRenderer *r, int mix, const AudrenEffectIn *e) {
         uint64_t w=(uint64_t)wr+c*m->frame,at=(uint64_t)read+c*m->frame;
         for(int k=0;k<m->frame;k++) {
             double scaled=trunc((double)input[k]*32768); int32_t value=scaled>INT32_MAX?INT32_MAX:scaled<INT32_MIN?INT32_MIN:!isfinite(scaled)?0:(int32_t)scaled;
-            input[k]=value/32768.f;
             if(w<=p.capacity)sd[(w+(unsigned)k)%p.capacity]=value;
         }
-        for(int k=0;k<m->frame;k++)output[k]=at<=p.capacity?rd[(at+(unsigned)k)%p.capacity]/32768.f:0;
+        for(int k=0;k<m->frame;k++) {
+            float ret_val = at<=p.capacity?rd[(at+(unsigned)k)%p.capacity]/32768.f:0;
+            output[k] = (ret_val != 0.0f) ? ret_val : input[k];
+        }
         if(c==p.channels-1) { if(w<=p.capacity)sh[1]=(wr+total)%p.capacity; if(at<=p.capacity)rh[0]=(read+total)%p.capacity; }
     }
     if(!e->enabled) { sh[0]=sh[1]=sh[3]=0; rh[0]=rh[1]=rh[3]=0; }
