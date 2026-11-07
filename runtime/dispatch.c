@@ -204,7 +204,33 @@ static __attribute__((noinline)) void dispatch_preempt(Cpu *c) {
 
 // Jump to the guest address in c->pc. Always a tail call, so chains of indirect jumps keep the host stack flat. A
 // pending preempt request costs two loads and a branch to check.
+// Diagnostics: TOTK_DISPATCH_TRACE=<return-address prefix> logs every virtual call whose return address falls in
+// [prefix, prefix + 0x100), with the target it goes to. Used to follow a vtable dispatch into the code behind it.
+static int g_dispatch_trace = -1;
+static uint64_t g_dispatch_prefix;
+static uint64_t g_dispatch_hit;
+static int g_dispatch_hit_on = -1;
+
 void rt_dispatch(Cpu *c) {
+    if (__builtin_expect(g_dispatch_trace < 0, 0)) {
+        const char *v = getenv("TOTK_DISPATCH_TRACE");
+        const char *h = getenv("TOTK_DISPATCH_HIT");
+        g_dispatch_hit = h ? strtoull(h, NULL, 16) : 0;
+        g_dispatch_hit_on = g_dispatch_hit != 0;
+        g_dispatch_prefix = v ? strtoull(v, NULL, 16) : 0;
+        g_dispatch_trace = g_dispatch_prefix != 0 || g_dispatch_hit_on;
+    }
+    if (__builtin_expect(g_dispatch_trace && c->pc, 0)) {
+        uint64_t lr = c->x[30];
+        // TOTK_DISPATCH_HIT=<target>: log the callers of one function, which names the driver of a state machine.
+        if (g_dispatch_hit && c->pc == g_dispatch_hit)
+            rt_log("dispatch: caller %#llx -> %#llx", (unsigned long long)lr, (unsigned long long)c->pc);
+        if (lr >= g_dispatch_prefix && lr < g_dispatch_prefix + 0x100) {
+            char d[96];
+            rt_log("dispatch: lr %#llx -> %#llx (%s)", (unsigned long long)lr, (unsigned long long)c->pc,
+                   ldr_describe(c->pc, d, sizeof d));
+        }
+    }
     if (__builtin_expect(c->thread && kern_preempt_pending(c->thread), 0))
         __attribute__((musttail)) return dispatch_preempt(c);
     uint64_t i = __builtin_rotateright64(c->pc - D.lo, 2);

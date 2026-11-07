@@ -1313,6 +1313,9 @@ void romfs_close(uint64_t h) {
 uint32_t romfs_entry_type(int *out, const char *path) {
     if (!out) return FS_R_INVALID;
     const char *p = romfs_relative_norm(path);
+    if ((rt_trace & RT_TRACE_FS) != 0)
+        rt_log("fs: entry_type \"%s\" -> rel \"%s\" index %s mount \"%s\"", path ? path : "(null)",
+               p ? p : "(null)", p && file_index(p) != UINT64_MAX ? "hit" : "miss", mount_name);
     if (!p) return FS_R_PATH_NOT_FOUND;
     if (file_index(p) != UINT64_MAX) {
         *out = FS_ENTRY_FILE;

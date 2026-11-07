@@ -495,11 +495,15 @@ NVN_API(nvnDeviceApplyDeferredFinalizes) { (void)c; }
 // completed. Older titles call it before they reuse a buffer, where the newer ones wait on the window instead.
 NVN_API(nvnQueueWaitSync) {
     const sync_t *s = arg_p(c, 1);
-    if (!s->fenced) return;
+    if (!s || !s->fenced) return;
     const GfxBackend *b = gfx_backend();
     if (b->fence_done() >= s->fence) { b->cpu_synced(s->fence); return; }
     NVN_BLOCKING();
-    b->fence_wait(s->fence, UINT64_MAX);
+    // Bounded: a fence the back end never reaches must not hang a loader thread without a word. Two seconds is far
+    // beyond any frame, and the log line says which fence was waited for.
+    if (!b->fence_wait(s->fence, 2000000000ull))
+        rt_log("nvn: nvnQueueWaitSync gave up after 2 s on fence %llu (done %llu)", (unsigned long long)s->fence,
+               (unsigned long long)b->fence_done());
     b->cpu_synced(s->fence);
 }
 

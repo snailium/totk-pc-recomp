@@ -198,6 +198,10 @@ extern const char rt_port_version[];                       // VERSION at the bui
 // ---- kernel (kernel.c)
 typedef struct RtThread RtThread;
 Cpu *kern_cpu(void);                                       // current guest thread's Cpu, NULL on host threads
+void mutex_trace_dump(void);                              // diagnostics: every mutex the runtime still sees taken,
+                                                           // and the thread that holds it (TOTK_MUTEX_TRACE=1)
+void kern_dump_waiters(void);                             // diagnostics: every thread's wait state and the syscall
+                                                           // mix; called from the SIGQUIT handler
 void kern_free_cores_note(void);                           // for crash reports: logs that free_cores = 1 lifted the
                                                            // virtual core gate, nothing when the gate is on
 uint32_t kern_main_thread(Cpu **cpu);                      // main thread object and Cpu for the calling host thread
@@ -236,6 +240,10 @@ void kern_bind_system_event(Cpu *c, uint64_t ev, int autoclear);   // guest thre
 void kern_signal_system_event(uint64_t ev);                // any thread
 int kern_svc(Cpu *c, uint32_t imm);                        // thread/sync SVCs; 1 if handled
 uint64_t kern_now_ns(void);
+// The last lifted functions each thread entered, for TOTK_LASTCALLS (lastcalls.c).
+void lastcall_setup(void);
+void lastcall_note(uint64_t addr, uint64_t lr);
+void lastcall_dump(int n);
 extern uint64_t rt_guest_start_ns;   // kern_now_ns when the guest started (boot.c), 0 before
 typedef struct { uint64_t svcs, threads, host_calls; } RtStats;
 RtStats rt_stats(void);                                    // host_calls: hostfn_calls()
