@@ -227,6 +227,9 @@ void kern_handle_close(uint32_t h);                        // CloseHandle from t
                                                            // bad handle
 enum { KERN_SESSION = 4, KERN_TMEM = 5 };
 uint32_t kern_event_new(void);                             // writable handle
+uint32_t kern_current_thread_handle(void);                 // the calling guest thread's kernel handle, 0 on host threads
+int kern_handle_event_kind(uint32_t h);                    // 1 = writable event, 2 = readable event, 0 = neither
+                                                           // (diagnostics: who hands an event to a service)
 uint32_t kern_event_readable(uint32_t writable);
 void kern_event_signal(uint32_t writable);
 void kern_bind_system_event(Cpu *c, uint64_t ev, int autoclear);   // guest thread only

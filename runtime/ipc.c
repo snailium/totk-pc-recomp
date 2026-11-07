@@ -222,6 +222,13 @@ static void dispatch(IpcSession *s, uint32_t *m) {
     parse(m, &rq, &words, &ndata);
     if (rq.type == T_CLOSE || rq.type == T_TIPC_CLOSE) return;
     plat_inc64(&g_requests);
+    if (getenv("TOTK_SYNC_TRACE"))
+        for (unsigned i = 0; i < rq.ncopy + rq.nmove; i++) {
+            uint32_t h = i < rq.ncopy ? rq.copy[i] : rq.move[i - rq.ncopy];
+            int kind = kern_handle_event_kind(h);
+            if (kind) rt_log("sync: ipc %s cmd %u is handed event handle %#x (%s end) by thread %#x", s->name, rq.cmd, h,
+                             kind == 1 ? "writable" : "readable", kern_current_thread_handle());
+        }
     IpcResponse rs;
     memset(&rs, 0, sizeof rs);
     int tipc = rq.type >= T_TIPC_BASE;

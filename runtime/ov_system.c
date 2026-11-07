@@ -514,7 +514,9 @@ static void ov_account_initialize(Cpu *c) {
 // bool TryOpenPreselectedUser(UserHandle *out)
 static void ov_open_user(Cpu *c) {
     UserHandle *out = arg_p(c, 0);
+    static int said;
     if (!out) rt_fatal("nn::account::TryOpenPreselectedUser: null handle");
+    if (!said++) rt_log("account: TryOpenPreselectedUser asked");
     plat_mutex_lock(&account_lock);
     load_uid();
     int ok = 0;

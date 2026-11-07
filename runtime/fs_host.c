@@ -1194,9 +1194,17 @@ static void ov_read_directory(Cpu *c) {
     ret_x(c, r);
 }
 static void ov_close_directory(Cpu *c) { close_directory(arg_x(c, 0)); }
-static void ov_mount_save(Cpu *c) { ret_x(c, mount_save(arg_p(c, 0), arg_p(c, 1))); }
+static void ov_mount_save(Cpu *c) {
+    uint32_t r = mount_save(arg_p(c, 0), arg_p(c, 1));
+    rt_log("fs: MountSaveData(\"%s\") -> %#x", (const char *)arg_p(c, 0) ? (const char *)arg_p(c, 0) : "", r);
+    ret_x(c, r);
+}
 static void ov_mount_save_ro(Cpu *c) { ret_x(c, mount_save_ro(arg_p(c, 0), arg_x(c, 1), arg_p(c, 2))); }
-static void ov_save_exists(Cpu *c) { ret_x(c, save_exists(arg_x(c, 0), arg_p(c, 1))); }
+static void ov_save_exists(Cpu *c) {
+    uint32_t r = save_exists(arg_x(c, 0), arg_p(c, 1));
+    rt_log("fs: IsSaveDataExisting(app, uid) -> %#x", r);
+    ret_x(c, r);
+}
 static void ov_mount_temp(Cpu *c) { ret_x(c, mount_temp(arg_p(c, 0))); }
 static void ov_unmount(Cpu *c) { unmount(arg_p(c, 0)); }
 static void ov_commit(Cpu *c) { ret_x(c, commit(arg_p(c, 0))); }
@@ -1268,6 +1276,17 @@ HOST_OVERRIDE("_ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE", ov_d
 HOST_OVERRIDE(S_CLOSE_DIRECTORY, ov_close_directory);
 HOST_OVERRIDE(S_MOUNT_SAVE, ov_mount_save);
 HOST_OVERRIDE(S_MOUNT_SAVE_RO, ov_mount_save_ro);
+// bool nn::fs::IsSaveDataExisting(const account::Uid &uid): the one-argument spelling older titles use. The answer is
+// the return value -- the mangled name carries one argument and no `bool *`, so there is no out parameter. Writing 1
+// through the argument overwrote the Uid with it and still returned 0, which the title read as "no save": Ryza 2 then
+// sat in SaveLoadStateSystemData::updateStartProcess() warning that the save was absent, waiting on an I/O completion
+// that never came, and the screen stayed black.
+static void ov_save_exists_uid(Cpu *c) {
+    static int said;
+    if (!said++) rt_log("fs: IsSaveDataExisting(uid) -> true (the port creates the save on first write)");
+    ret_x(c, 1);
+}
+HOST_OVERRIDE("_ZN2nn2fs18IsSaveDataExistingERKNS_7account3UidE", ov_save_exists_uid);
 HOST_OVERRIDE(S_SAVE_EXISTS, ov_save_exists);
 HOST_OVERRIDE(S_MOUNT_TEMP, ov_mount_temp);
 HOST_OVERRIDE(S_UNMOUNT, ov_unmount);
