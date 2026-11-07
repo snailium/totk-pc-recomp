@@ -203,6 +203,7 @@ void mutex_trace_dump(void);                               // diagnostics: every
 void kern_dump_waiters(void);                              // diagnostics: every thread's wait state and the syscall mix
 void kern_free_cores_note(void);                           // for crash reports: logs that free_cores = 1 lifted the
                                                            // virtual core gate, nothing when the gate is on
+void kern_main_thread_attrs(uint64_t stack, int prio, int core);
 uint32_t kern_main_thread(Cpu **cpu);                      // main thread object and Cpu for the calling host thread
                                                            // (main.npdm: 1 MiB stack at the top of the stack region,
                                                            // priority 44, core 0); on the main thread: its handle
