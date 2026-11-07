@@ -593,6 +593,34 @@ NVN_API(nvnWindowSetNumActiveTextures) {
     if (n < 2 || n > w->ntex) rt_fatal("nvn: invalid active window texture count %d", n);
     w->active = n;
 }
+// NVNwindowAcquireTextureResult nvnQueueAcquireTexture(NVNqueue *q, NVNsync *s, int *index): the pre-window spelling of
+// the acquire, on the queue that presents. Delegate to the window the title built; before it has acquired from one, the
+// index is 0 and nothing paces it.
+// The window the title presents from, remembered for nvnQueueAcquireTexture: older NVN titles acquire from a queue, and
+// the queue's images are the window they built for the display.
+static win_t *g_present_window;
+static void sleep_until(uint64_t at);
+
+NVN_API(nvnQueueAcquireTexture) {
+    sync_t *s = arg_p(c, 1);
+    int *out = arg_p(c, 2);
+    win_t *o = g_present_window;
+    NVN_BLOCKING();
+    int idx = (o && o->active) ? o->next++ % o->active : 0;
+    if (out) *out = idx;
+    uint64_t at = (o && idx < 4) ? o->avail[idx] : 0;
+    if (at) {
+        uint64_t p0 = perf_begin();
+        sleep_until(at);
+        perf_end(PERF_PACE, p0);
+    }
+    if (s) {
+        s->fenced = 3;
+        s->fence = 0;
+    }
+    ret_x(c, NVN_WINDOW_ACQUIRE_TEXTURE_RESULT_SUCCESS);
+}
+
 NVN_API(nvnWindowGetNumActiveTextures) {
     const win_t *w = WN(c);
     ret_x(c, (uint32_t)(w->active ? w->active : w->ntex));
@@ -628,6 +656,7 @@ NVN_API(nvnWindowSetPresentInterval) {
     o->interval = v;
 }
 // void nvnWindowSetCrop(NVNwindow *w, int x, int y, int w, int h)
+
 NVN_API(nvnWindowSetCrop) {
     win_t *o = WN(c);
     int v[4] = {(int)arg_x(c, 1), (int)arg_x(c, 2), (int)arg_x(c, 3), (int)arg_x(c, 4)};
@@ -678,6 +707,7 @@ NVN_API(nvnWindowAcquireTexture) {
     win_t *o = arg_p(c, 0);
     sync_t *s = arg_p(c, 1);
     int *out = arg_p(c, 2);
+    g_present_window = o;
     NVN_BLOCKING();
     int idx = o->active ? o->next++ % o->active : 0;
     *out = idx;

@@ -28,6 +28,8 @@ typedef struct RTTarget {
     void (*guest_main)(Cpu *c);
     unsigned sdk_flags;
     const char *romfs_image_name;
+    // The application pool this title needs, when it is larger than the retail default; 0 keeps the default.
+    uint64_t pool_min;
     // The constructor counts this title's modules have; NULL keeps the shared tables for the TotK versions.
     const RTInitCount *init_counts;
     int init_count_n;
