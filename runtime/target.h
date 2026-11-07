@@ -1,0 +1,36 @@
+// Per-title differences, in one place.
+//
+// The runtime is shared by more than one game; what differs between them is data and behaviour that belongs to the
+// title, not to the port: how its SDK is entered, which kernel behaviour that SDK expects, and which image its
+// extraction produced. Keeping those behind this interface is what lets the shared files stay close to upstream: a
+// change there touches one call site, not every title's copy of the logic.
+//
+// The target is chosen at build time (tools/build_game.py --target), because the build already produces one binary
+// per title: build/<version>/totk. Everything else is shared code.
+#pragma once
+
+#include <stdint.h>
+
+#include "cpu.h"
+
+// sdk_flags
+#define RT_SDK_USER_CRITICAL_SECTIONS 1u   // the SDK takes its critical sections in user mode (Ryza 2 and older): the
+                                           // kernel has to own them, or a condition variable cannot release and hand off
+
+// A module's constructor count, the sanity check that the ExeFS is the game the build was made for.
+typedef struct { const char *name; uint64_t entries; } RTInitCount;
+
+typedef struct RTTarget {
+    const char *name;
+    // The guest main thread's first call: how this title's SDK is entered. The newest SDK goes through
+    // nn::init::Start, which runs every module's constructor and then nnMain; older titles call nnosInitialize and
+    // reach nnMain from their own entry.
+    void (*guest_main)(Cpu *c);
+    unsigned sdk_flags;
+    const char *romfs_image_name;
+    // The constructor counts this title's modules have; NULL keeps the shared tables for the TotK versions.
+    const RTInitCount *init_counts;
+    int init_count_n;
+} RTTarget;
+
+const RTTarget *rt_target(void);

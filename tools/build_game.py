@@ -205,6 +205,8 @@ DEFAULT_DEPS = ROOT / 'toolchain' / 'deps-mingw'
 # page. plugin_init.c reads the install's own plugin records from patches.h (RT_PLUGINS, RT_PLUGIN_WRITES): a mod plugin
 # the rebuild built in. A library source that includes one of PER_VERSION_HEADERS stops the library build
 # (library_sources).
+TARGET = 'totk'   # --target: which runtime/targets/<name>.c is the title's target layer
+
 INSTALL_SIDE = {'romfs.c', 'patches.c', 'ov_zstd.c', 'mouse_direct.c', 'ov_ability.c', 'plugin_init.c', 'freecam.c'}
 PER_VERSION_HEADERS = ('"patches.h"', '"romfs_config.h"')
 LIB_NAME = 'libtotkrt.a'
@@ -357,12 +359,20 @@ def other_os(name):
 
 
 def runtime_sources(skip=()):
-    """Every runtime/*.c, *.cpp, platform/*.c, *.rc, the in-game menu (ui/*.cpp) and Dear ImGui of this OS except the
+    """Every runtime/*.c, *.cpp, platform/*.c, targets/*.c, *.rc, the in-game menu (ui/*.cpp) and Dear ImGui of this OS except the
     names in skip, so a task adds a file without editing this script."""
-    pats = ('*.c', '*.cpp', 'platform/*.c', '*.rc', 'ui/*.cpp', 'third_party/imgui/*.cpp',
+    pats = ('*.c', '*.cpp', 'platform/*.c', 'targets/*.c', '*.rc', 'ui/*.cpp', 'third_party/imgui/*.cpp',
             'third_party/imgui/backends/*.cpp', 'third_party/FidelityFX/sdk/src/shared/*.cpp', 'third_party/FidelityFX/sdk/src/backends/vk/*.cpp',
             'third_party/FidelityFX/sdk/src/components/*/*.cpp')
-    return sorted(p for pat in pats for p in RUNTIME.glob(pat) if p.name not in skip and not other_os(p.name))
+    keep = []
+    for pat in pats:
+        for p in RUNTIME.glob(pat):
+            if p.name in skip or other_os(p.name):
+                continue
+            if p.parent.name == 'targets' and p.stem != TARGET:
+                continue
+            keep.append(p)
+    return sorted(keep)
 
 
 def library_sources(sources):
@@ -1093,6 +1103,7 @@ def main():
                          '.profdata (tools/pgo.py merge)')
     ap.add_argument('--gen-o2', action='store_true',
                     help='compile the generated code at -O2 without a profile (the --pgo level), for A/B builds')
+    ap.add_argument('--target', default='totk', help='which runtime/targets/<name>.c is linked (default: totk)')
     ap.add_argument('--expected', type=Path,
                     help='expected hashes (default tools/data/expected-<display version>.json)')
     ap.add_argument('--portable', action='store_true',
@@ -1123,6 +1134,8 @@ def main():
         sys.exit(f'{paths["romfs"] / "index.json"} not found: without the RomFS the game stops at start. Run '
                  'tools/extract.py (it writes extracted/<version> into the [work] dir of config.local.toml), pass '
                  '--romfs DIR, or --no-romfs to build without it')
+    global TARGET
+    TARGET = args.target
     expected = args.expected
     if not expected:
         if args.version not in DISPLAY_VERSIONS:

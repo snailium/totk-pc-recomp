@@ -21,6 +21,7 @@
 #include "mods.h"
 #include "nvn_api.h"
 #include "platform/platform.h"
+#include "target.h"
 #include "vk.h"
 #include "gameplay_tweaks.h"
 
@@ -32,9 +33,10 @@
 #define CTOR_DONE 2                      // a module's constructor flag after its DT_INIT ran the init_array
 #define CTOR_WAITING 1                   // after a DT_INIT that musl deferred (sdk's, called before main's)
 
-// The init_array sizes (1.1.0 and 1.2.1: counted in the modules; 1.4.3: DT_INIT_ARRAYSZ); MacNativeGames' boot check
-// expects the same. The three tables carry the same rows, so cb_module_inits walks them by the size of one.
-typedef struct { const char *name; uint64_t entries; } InitCount;
+// The init_array sizes of the TotK versions (1.1.0 and 1.2.1: counted in the modules; 1.4.3: DT_INIT_ARRAYSZ); the
+// target layer supplies the counts of any other title (target.h). The three tables carry the same rows, so
+// rt_boot_module_inits walks them by the size of one.
+typedef RTInitCount InitCount;
 static const InitCount inits_110[] = {{"main", 10668}, {"subsdk0", 45}, {"sdk", 116}};
 static const InitCount inits_121[] = {{"main", 10673}, {"subsdk0", 45}, {"sdk", 116}};
 static const InitCount inits_143[] = {{"main", 10717}, {"subsdk0", 45}, {"sdk", 83}};
@@ -54,8 +56,8 @@ static uint32_t ctor_state(const RtLoaded *m) { return LD32(m->ctor_flag); }
 
 static const char *caller(const Cpu *c, char *buf, int n) { return ldr_describe(c->x[30] - 4, buf, n); }
 
-// main.npdm META: the main thread's priority (+0xE), core (+0xF) and stack size (+0x1C). kernel.c builds the main
-// thread with the 1.2.1 values; a different npdm means a different game build.
+// main.npdm META: the main thread's priority (+0xE), core (+0xF) and stack size (+0x1C). The title declares these, so
+// they are handed to the kernel rather than checked against one game's values.
 static void check_npdm(void) {
     size_t n;
     uint8_t *npdm = ldr_read_verified(rt_config()->exefs, "main.npdm", &n);
@@ -76,9 +78,11 @@ static void cb_loader_ready(Cpu *c) {
 
 // DT_INIT registers the module with musl (__nnmusl_init_dso) and runs its init_array; the constructor flag reads 2
 // afterwards (MacNativeGames loader.c:458-462).
-static void cb_module_inits(Cpu *c) {
+void rt_boot_module_inits(Cpu *c);   // the target layer's older entry runs these itself
+
+void rt_boot_module_inits(Cpu *c) {
     if (plat_cas32(&inits_done, 0, 0)) rt_fatal("boot: module constructors requested twice");
-    if (rt_config()->plugin_init) plugin_init_run(c, module_named("sdk"));   // the plugin service run ends there
+ if (rt_config()->plugin_init) plugin_init_run(c, module_named("sdk"));   // the plugin service run ends there
     // A mod plugin's init runs after sdk's and before the game's (plugin_init.c plugins_start): sdk's DT_INIT then
     // comes first, as on the Switch; without a plugin the order stays main, subsdk0, sdk. Called first, sdk's DT_INIT
     // only registers sdk with its own musl (__nnmusl_init_dso returns 1: deferred), and main's DT_INIT then finishes
@@ -86,8 +90,11 @@ static void cb_module_inits(Cpu *c) {
     // during it on 1.4.3): sdk's flag stays 1 and its DT_INIT is not called again (a second call would protect its
     // locked RELRO again, and the SDK aborts).
     sdk_first = plugins_start(c, module_named("sdk"));
-    for (unsigned k = 0; k < sizeof inits_121 / sizeof *inits_121; k++) {
-        const RtLoaded *m = module_named(expected_inits[k].name);
+    const InitCount *want = rt_target()->init_counts;
+    int nwant = rt_target()->init_count_n;
+    if (!want) want = expected_inits, nwant = (int)(sizeof inits_121 / sizeof *inits_121);
+    for (int k = 0; k < nwant; k++) {
+        const RtLoaded *m = module_named(want[k].name);
         uint64_t entries = m->init_array_size / 8;
         if (!m->init) rt_fatal("boot: %s has no DT_INIT", m->name);
         int deferred = sdk_first && m == module_named("sdk");
@@ -100,9 +107,9 @@ static void cb_module_inits(Cpu *c) {
         if (state != (deferred ? CTOR_WAITING : CTOR_DONE))
             rt_fatal("boot: %s DT_INIT left its constructor flag at %u, not %d", m->name, state,
                      deferred ? CTOR_WAITING : CTOR_DONE);
-        if (entries != expected_inits[k].entries)
-            rt_fatal("boot: %s has %llu init_array entries, this game version has %llu", m->name, (unsigned long long)entries,
-                     (unsigned long long)expected_inits[k].entries);
+        if (entries != want[k].entries)
+            rt_fatal("boot: %s has %llu init_array entries, %s expects %llu", m->name, (unsigned long long)entries,
+                     rt_target()->name, (unsigned long long)want[k].entries);
     }
     plat_xchg32(&inits_done, 1);
 }
@@ -334,7 +341,8 @@ void rt_frame_presented(const tex_t *t, uint64_t n) {
 // ---- steps 9-14
 static uint64_t cb_addr[3];
 
-static void guest_main(Cpu *c) {
+// The newest SDK's entry, named for the target layer (target.h): nn::init::Start then nnMain.
+void rt_boot_guest_main_init_start(Cpu *c) {
     uint32_t handle = kern_main_thread(&c);
     uint64_t start = ldr_symbol(SYM_INIT_START);
     if (!start) rt_fatal("boot: %s is not exported", SYM_INIT_START);
@@ -356,6 +364,8 @@ static void prewarm_main(void *arg) {
     return;
 }
 
+static void guest_main(Cpu *c);   // the target layer entry (kern_run_on_guest_main, below)
+
 // --plugin-init DIR: the modules load and nn::init::Start runs as at boot, and its module-init callback runs sdk's
 // DT_INIT and each plugin's instead of the game's constructors, writes the record and exits (plugin_init.c). No game
 // constructor, nnMain, shader prewarm, graphics or audio runs.
@@ -365,13 +375,15 @@ void rt_boot_plugin_init(void) {
     ldr_load(rt_config()->exefs);
     rt_patches_init();   // the generated code reads the patch page
     cb_addr[0] = hostfn_register("<rtld loader_ready>", cb_loader_ready);
-    cb_addr[1] = hostfn_register("<rtld module_inits>", cb_module_inits);
+    cb_addr[1] = hostfn_register("<rtld module_inits>", rt_boot_module_inits);
     cb_addr[2] = hostfn_register("<rtld module_finis>", cb_module_finis);
     hostfn_seal();
     rt_guest_start_ns = kern_now_ns();
     kern_run_on_guest_main(guest_main);
     rt_fatal("boot: the guest main thread ended");
 }
+
+static void guest_main(Cpu *c) { rt_target()->guest_main(c); }
 
 void rt_boot(void) {
     check_npdm();
@@ -387,7 +399,7 @@ void rt_boot(void) {
     res_init();
     cheats_init();   // after the patch sets: a cheat's set follows its setting
     cb_addr[0] = hostfn_register("<rtld loader_ready>", cb_loader_ready);
-    cb_addr[1] = hostfn_register("<rtld module_inits>", cb_module_inits);
+    cb_addr[1] = hostfn_register("<rtld module_inits>", rt_boot_module_inits);
     cb_addr[2] = hostfn_register("<rtld module_finis>", cb_module_finis);
     hostfn_seal();
     uint64_t held = plat_now_ms();
