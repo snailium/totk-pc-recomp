@@ -112,6 +112,10 @@ PlatThread *plat_thread_new(PlatThreadFn fn, void *arg, const char *name) {
     return plat_thread_new_ex(fn, arg, name, 0);
 }
 
+static uint64_t g_thread_default_affinity;   // plat_thread_set_default_affinity: the group new threads start in
+
+void plat_thread_set_default_affinity(uint64_t mask) { g_thread_default_affinity = mask; }
+
 PlatThread *plat_thread_new_ex(PlatThreadFn fn, void *arg, const char *name, size_t stack) {
     PlatThread *t = calloc(1, sizeof *t);
     if (!t) return NULL;
@@ -122,6 +126,15 @@ PlatThread *plat_thread_new_ex(PlatThreadFn fn, void *arg, const char *name, siz
     pthread_attr_init(&a);
     // The stack is mapped lazily, as Windows reserves it: only the pages a thread touches cost memory.
     pthread_attr_setstacksize(&a, stack ? stack : PLAT_STACK_DEFAULT);
+    // Start in the default group rather than in the group of whoever called this: a host thread started from inside a
+    // guest thread would otherwise inherit the guest's group and compete with it for the same cache and processors.
+    if (g_thread_default_affinity) {
+        cpu_set_t set;
+        CPU_ZERO(&set);
+        for (int i = 0; i < 64; i++)
+            if (g_thread_default_affinity >> i & 1) CPU_SET(i, &set);
+        pthread_attr_setaffinity_np(&a, sizeof set, &set);
+    }
     int e = pthread_create(&t->t, &a, thread_main, t);
     pthread_attr_destroy(&a);
     if (e) { free(t); return NULL; }
@@ -174,26 +187,67 @@ static int cpu_vendor_is_amd(void) {
     return amd;
 }
 
-int plat_cpu_cache_groups(uint64_t *first, uint64_t *second) {
-    *first = *second = 0;
-    if (!cpu_vendor_is_amd())
-        // Intel hybrid CPUs have to come later: their two L3 instances are P-cores and E-cores, so the split belongs to
-        // a core type pinned by tile (cpuid leaf 0x1a, hybrid information) rather than to "the first group and the rest".
-        // Pinning the host's Vulkan work to the E-cores would be worse than not pinning at all.
-        return 0;
-    uint64_t all = 0, one = 0;
-    if (!plat_cpu_cores(&all, &one)) return 0;
-    FILE *f = fopen("/sys/devices/system/cpu/cpu0/cache/index3/shared_cpu_map", "r");
+// The L3 instance a processor belongs to, from /sys/devices/system/cpu/cpu<n>/cache/index3/shared_cpu_map (a hex mask
+// of the processors that share it); 0 when the kernel does not report one.
+static int cpu_groups_read(uint64_t masks[2]);
+
+static uint64_t l3_group_of(int cpu) {
+    char path[96], buf[64] = {0};
+    snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cache/index3/shared_cpu_map", cpu);
+    FILE *f = fopen(path, "r");
     if (!f) return 0;
-    char buf[64] = {0};
     int got = fscanf(f, "%63s", buf) == 1;
     fclose(f);
-    if (!got) return 0;
-    uint64_t a = strtoull(buf, NULL, 16) & all, b = all & ~a;
-    if (!a || !b || __builtin_popcountll(a) < 4 || __builtin_popcountll(b) < 4) return 0;   // one group, or lopsided
-    *first = a;
-    *second = b;
-    return 1;
+    return got ? strtoull(buf, NULL, 16) : 0;
+}
+
+int plat_cpu_groups(uint64_t masks[2]) {
+    // The topology does not change while the process runs, and the caller asks once a frame: read it once.
+    static int cached = -1;
+    static uint64_t cached_masks[2];
+    if (cached < 0) {
+        cached = cpu_groups_read(cached_masks);
+    }
+    masks[0] = cached_masks[0];
+    masks[1] = cached_masks[1];
+    return cached;
+}
+
+static int cpu_groups_read(uint64_t masks[2]) {
+    masks[0] = masks[1] = 0;
+    uint64_t all = 0, one = 0;
+    if (!plat_cpu_cores(&all, &one) || !all) return 0;
+    // Only AMD's chiplet parts are grouped this way. Intel's hybrid parts also have several L3 instances, but those are
+    // P-cores and E-cores: putting the host's Vulkan work on the E-cores would be worse than not pinning at all, and the
+    // split by core type needs cpuid leaf 0x1a (hybrid information) rather than "one cache each". One group until then.
+    uint64_t groups[16];
+    int n = 0;
+    if (cpu_vendor_is_amd()) {
+        for (int i = 0; i < 64 && n < (int)(sizeof groups / sizeof *groups); i++) {
+            if (!(all >> i & 1)) continue;
+            uint64_t m = l3_group_of(i) & all;
+            if (!m) continue;
+            int seen = 0;
+            for (int k = 0; k < n; k++) seen |= groups[k] == m;
+            if (!seen) groups[n++] = m;
+        }
+    }
+    if (n <= 1) { masks[0] = all; return 1; }   // one cache, or a monolithic CPU: every processor in one group
+    // The placement only ever splits two ways, so of a Threadripper's four to twelve L3 instances the two largest are
+    // reported, in a stable order (size, then lowest processor) so both sides of the split agree on which is which.
+    for (int i = 0; i < n; i++)
+        for (int k = i + 1; k < n; k++) {
+            int ci = __builtin_popcountll(groups[i]), ck = __builtin_popcountll(groups[k]);
+            uint64_t li = groups[i] & (~groups[i] + 1), lk = groups[k] & (~groups[k] + 1);
+            if (ci < ck || (ci == ck && li > lk)) {
+                uint64_t t = groups[i];
+                groups[i] = groups[k];
+                groups[k] = t;
+            }
+        }
+    masks[0] = groups[0];
+    masks[1] = groups[1];
+    return 2;
 }
 
 void plat_thread_pin(uint64_t mask) {

@@ -1611,6 +1611,9 @@ static void guest_main(void *p) {
 // other's working set from L3. The process moves to the host's group once, before the guest starts; each guest thread
 // pins itself back to the first when it starts, and host threads started later inherit the second.
 // TOTK_CCX_SPLIT=0 turns the split off.
+// The guest's affinity group, asked once. A chiplet CPU has one group per L3 instance (platform.c: plat_cpu_groups), so
+// the guest's threads take the first and the host's the second, and neither evicts the other's working set from L3. A
+// monolithic CPU has one group holding every processor: nothing is pinned, and every thread runs wherever it likes.
 static uint64_t guest_cpu_mask(void) {
     static uint64_t mask;
     static int once;
@@ -1618,12 +1621,15 @@ static uint64_t guest_cpu_mask(void) {
         once = 1;
         const char *env = getenv("TOTK_CCX_SPLIT");
         if (env && !strcmp(env, "0")) return 0;
-        uint64_t a = 0, b = 0;
-        if (!plat_cpu_cache_groups(&a, &b)) return 0;
-        if (b) plat_process_affinity(b);
-        mask = a;
-        rt_log("kernel: dual-CCX L3 split: guest on CPUs %#llx, host/Vulkan on CPUs %#llx", (unsigned long long)a,
-               (unsigned long long)b);
+        uint64_t g[2] = {0, 0};
+        if (plat_cpu_groups(g) != 2) return 0;
+        // Threads the runtime starts from now on begin in the host's group, whatever thread starts them; the guest's
+        // threads move themselves to their own group at the top of guest_main and thread_main.
+        plat_thread_set_default_affinity(g[1]);
+        plat_process_affinity(g[1]);
+        mask = g[0];
+        rt_log("kernel: cpu groups: guest on CPUs %#llx, host on CPUs %#llx", (unsigned long long)g[0],
+               (unsigned long long)g[1]);
     }
     return mask;
 }

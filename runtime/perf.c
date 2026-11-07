@@ -252,9 +252,24 @@ static void cpu_placement(void) {
             mode = 0;
     }
     int on = RT_KNOB_ON(mode);
-    if (on == applied) return;
+    // Two cache groups are already in use: the guest and the host are on one each, and collapsing that to one processor
+    // per core would undo the split instead of improving it (see kernel.c: guest_cpu_mask).
+    uint64_t groups[2];
+    if (plat_cpu_groups(groups) == 2) {
+        static int said;
+        if (on && !said++) rt_log("cpu: one-per-core skipped: the process is split across two cache groups");
+        applied = on;
+        return;
+    }
+    // Nothing was applied before the first call, so the off state must not apply anything either: doing so would set the
+    // whole process to the *calling thread's* mask (plat_cpu_cores reads sched_getaffinity of the caller), which threw
+    // away an affinity the caller had set up, such as the two cache groups of a chiplet CPU.
+    if (on == applied || !on) {
+        applied = on;
+        return;
+    }
     applied = on;
-    plat_process_affinity(on ? one : all);
+    plat_process_affinity(one);
 }
 
 void perf_present(uint64_t frame) {
