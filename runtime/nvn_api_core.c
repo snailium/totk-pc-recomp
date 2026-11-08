@@ -587,13 +587,6 @@ NVN_API(nvnQueueGetError) {
 NVN_API(nvnQueueFlush) { (void)c; }
 // void nvnQueueFinish(NVNqueue *q)
 NVN_API(nvnQueueFinish) {
-    const char *env = cfg_get("TOTK_NO_QUEUE_FINISH");
-    if (env && *env) {
-        if (strcmp(env, "0") != 0) return;
-    } else {
-        const RTTarget *t = rt_target();
-        if (t && t->skip_queue_finish) return;
-    }
     {
         NVN_BLOCKING();
         gfx_backend()->finish();

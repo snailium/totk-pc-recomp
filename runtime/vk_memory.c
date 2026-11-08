@@ -300,11 +300,6 @@ int vk_pool_init(pool_t *p) {
     return 1;
 }
 
-static void pool_retire(void *arg) {
-    VkCtx *c = vk_ctx();
-    if (c) destroy_rec(c, (PoolRec *)arg);
-}
-
 void vk_pool_fini(pool_t *p) {
     VkCtx *c = vk_ctx();
     if (!c) return;
@@ -331,12 +326,16 @@ void vk_pool_fini(pool_t *p) {
     // Images cut from this range go first; a used buffer or memory waits until the GPU is done with it, since the
     // guest gets the storage back when this returns.
     vk_texture_range_gone(r->lo, r->size, r->alloc);
-    if (r->used && r->kind != POOL_VIRT) vk_upload_flush(1);
+    if (r->used && r->kind != POOL_VIRT) {
+        vk_upload_flush(1);
+        vk_queue_lock();
+        vkQueueWaitIdle(c->gfx_queue);
+        vk_queue_unlock();
+    }
     vk_mem_collect();
-    // A mirrored or used pool's record and buffers outlive the submission being recorded, whose sync copies and write-backs
-    // name them; completion thread destroys them once the timeline fence signals completion.
+    // A mirrored pool's record and buffers outlive the submission being recorded, whose sync copies and write-backs may
+    // name them (the game frees a pool only once the GPU is done with it, but its CPU writes may still be queued).
     if (r->mbuf) mirror_retiring(r), vk_completion_add(vk_sync_issued() + 1, mirror_retire, r);
-    else if (r->used && r->kind != POOL_VIRT) vk_completion_add(vk_sync_issued() + 1, pool_retire, r);
     else destroy_rec(c, r);
 }
 

@@ -29,7 +29,6 @@
 #include "vk.h"
 #include "vk_exec.h"
 #include "platform/platform.h"
-#include "target.h"
 #include "vk_dlaa.h"
 
 #define WEAK __attribute__((weak))
@@ -141,13 +140,12 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
 }
 
 // ---- Asynchronous replay
-enum { RI_SUBMIT, RI_PRESENT, RI_RELEASE, RI_POOL_FINI };
+enum { RI_SUBMIT, RI_PRESENT, RI_RELEASE };
 typedef struct {
     int kind, n, has_crop, crop[4];
     uint64_t value, submit_no, at, queued;
     uint64_t *h;
     const tex_t *tex;   // RI_RELEASE: a copy the item owns (the game may reuse the object's memory)
-    pool_t *pool;       // RI_POOL_FINI: a copy the item owns
 } ReplayItem;
 #define RQ_CAP 1024   // a frame queues 1 submit and 1 present, and up to a few hundred releases
 enum { DR_POOL_FINI, DR_MAP_VIRTUAL, DR_TEX_RELEASE, DR_PROG_RELEASE, DR_FINISH, DR_READ_TEXELS, DR_WRITE_TEXELS,
@@ -170,17 +168,11 @@ static uint64_t ck_reads, ck_diff, ck_diff_unexplained, ck_diff_idle;
 int vk_replay_async(void) {
     static int on = -1;
     if (on < 0) {
-        // Off by default on TotK. Where the game waits for the GPU it overlaps the replay with the game threads (a GTX 1650 in
+        // Off by default. Where the game waits for the GPU it overlaps the replay with the game threads (a GTX 1650 in
         // the Depths went from 450-686 frames over 50 ms a minute to 10-13, issue #88), the only place a gain was
         // measured. While it was the default, a GTX 1660 Ti at the 60 fps cap with the GPU at 26 % reported uneven
         // motion that 0.3.4 did not have (#659). It adds up to a frame of latency.
-        const char *e = cfg_get("TOTK_REPLAY_ASYNC");
-        if (e && *e) {
-            on = strcmp(e, "0") != 0;
-        } else {
-            const RTTarget *t = rt_target();
-            on = (t && t->default_replay_async > 0) ? 1 : 0;
-        }
+        on = cfg_bool("TOTK_REPLAY_ASYNC");
         rt_log("vk: replay %s (TOTK_REPLAY_ASYNC=%d)",
                on ? "on its own thread, at most one frame behind the game" : "on the submitting thread", on);
     }
@@ -228,9 +220,6 @@ static void replay_main(void *arg) {
             vk_present_drain();
             vk_texture_release(it.tex);
             free((void *)it.tex);
-        } else if (it.kind == RI_POOL_FINI) {
-            vk_pool_fini(it.pool);
-            free(it.pool);
         } else {
             uint64_t frame = __atomic_add_fetch(&gfx_counters.frames, 1, __ATOMIC_RELAXED);
             present_image(it.tex, it.has_crop ? it.crop : NULL, it.at, it.queued, frame, it.value);
@@ -283,7 +272,7 @@ static uint64_t replay_enqueue(ReplayItem *it) {
         wait_counted(DR_FULL, p0);
         core_back_unlocked(&away);
     }
-    it->value = (it->kind == RI_RELEASE || it->kind == RI_POOL_FINI) ? 0 : vk_sync_reserve();   // a release signals nothing
+    it->value = it->kind == RI_RELEASE ? 0 : vk_sync_reserve();   // a release signals nothing
     rq[(rq_head + rq_n) % RQ_CAP] = *it;
     rq_n++;
     plat_cond_broadcast(&rcv);
@@ -369,23 +358,7 @@ static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
 WEAK void vk_program_release(const prog_t *p) { (void)p; }
 
 static int vk_be_pool_init(pool_t *p) { vk_sync_start(); return vk_pool_init(p); }
-static void vk_be_pool_fini(pool_t *p) {
-    vk_sync_start();
-    if (!gfx_replay_async()) {
-        vk_present_drain();
-        vk_pool_fini(p);
-        return;
-    }
-    if (!p) return;
-    pool_t *copy = malloc(sizeof *copy);
-    if (!copy) rt_fatal("vk: out of memory (replay queue)");
-    *copy = *p;
-    ReplayItem it = {.kind = RI_POOL_FINI, .pool = copy};
-    plat_mutex_lock(&rl);
-    dr_calls[DR_POOL_FINI]++, dr_tcalls[DR_POOL_FINI]++;
-    plat_mutex_unlock(&rl);
-    replay_enqueue(&it);
-}
+static void vk_be_pool_fini(pool_t *p) { vk_sync_start(); replay_drain(DR_POOL_FINI); vk_present_drain(); vk_pool_fini(p); }
 static int vk_be_pool_map_virtual(pool_t *v, int n, const void *requests) {
     vk_sync_start();
     replay_drain(DR_MAP_VIRTUAL);
