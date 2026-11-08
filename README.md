@@ -1,4 +1,23 @@
-# TotK Recomp
+# TotK Recomp (Generic Switch Recomp Fork)
+
+> [!NOTE]
+> ### 🌟 About This Fork & Upstream Acknowledgement / 关于本 Fork 与致谢上游
+>
+> **致谢上游 (Upstream Acknowledgement):**  
+> 本项目是 [valentderah/totk-pc-recomp](https://github.com/valentderah/totk-pc-recomp) 的下游分支。我们对 [valentderah](https://github.com/valentderah) 及其所有贡献者在《塞尔达传说：王国之泪》(TOTK) 原生静态重编译上的开创性工作表示最崇高的敬意与由衷感谢！上游项目奠定了卓越的逆向工程、静态重编译工具链和底层图形/音频运行时基础。
+>
+> *(We express our sincere gratitude and highest respect to [valentderah](https://github.com/valentderah) and all contributors of `totk-pc-recomp` for their groundbreaking work on statically recompiling The Legend of Zelda: Tears of the Kingdom into native PC code.)*
+>
+> **定位与愿景：探索通用的 NS 游戏重编译 (Generic Switch Recompilation):**  
+> 官方上游项目专注于 TotK 单一游戏。而本 Fork 的核心目标是**探索通用的 Nintendo Switch 游戏原生静态重编译架构**。我们引入了模块化 **Target Seam 抽象机制**，扩展了对不同版本 Nintendo SDK（包括早期 SDK 9.x+）的系统调用与运行时支持，并补齐了通用图形/音频/文件系统管线（如 Separate Shader Bindings、DrawArraysIndirect、Dynamic NPDM 主线程配置、RomFS 目录遍历、Audren 音频路由等）。目前本运行时已支持：
+> - 🗡️ **The Legend of Zelda: Tears of the Kingdom**（包含 Linux/UMA APU 硬件加速、OSD 监控、无边框全屏等优化）
+> - 🌸 **Atelier Ryza 2: Lost Legends & the Secret Fairy / 莱莎的炼金工房2**（原生 50-60 FPS 流畅运行，全面适配 Gust 引擎特性）
+>
+> **分支架构与维护指南 (Branch Strategy & Workflow):**
+> - [`totk`](https://github.com/snailium/totk-pc-recomp/tree/totk)：TotK 优化主线，包含 Linux 平台增强、AMD UMA 自动优化预设、GPU 监控与本地修复，紧跟 `upstream/main`。
+> - [`ryza`](https://github.com/snailium/totk-pc-recomp/tree/ryza)：多游戏重编译扩展线，基于 `totk` 分支，集成 Target Seam 抽象与通用 SDK 增强特性。
+> - 详细同步维护指南请查阅 [docs/WORKFLOW.md](docs/WORKFLOW.md)。
+> - 所有被上游拒收的通用 PR 及技术复盘详见 [GitHub Issues](https://github.com/snailium/totk-pc-recomp/issues)。
 
 **TotK Recomp** is a static recompilation of *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, 2023) into a native x86-64 application for Windows and Linux ([docs/architecture.md](docs/architecture.md)).
 
@@ -71,6 +90,7 @@ To update, run a newer setup on the same folder; saves and settings are kept. Se
 
 TotK Recomp builds on the projects below. What was taken from each, with its license, is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
+- [valentderah/totk-pc-recomp](https://github.com/valentderah/totk-pc-recomp) (Official upstream project)
 - [LAS Recomp](https://github.com/peiikai/LASRecomp)
 - [MacNativeGames](https://github.com/ly05010419/MacNativeGames)
 - [d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile) and [nxnative](https://github.com/seedds/nxnative)
