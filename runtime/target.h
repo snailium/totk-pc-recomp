@@ -46,6 +46,12 @@ typedef struct RTTarget {
     // Function hooks: replaces indirect dispatch table slots at boot time without instruction patching.
     const RTFuncHook *func_hooks;
     int func_hook_n;
+    // Target engine defaults:
+    int split_draws_off;
+    int feedback_off;
+    int free_cores;
+    int frame_queue;
+    const char *vk_present;
 } RTTarget;
 
 const RTTarget *rt_target(void);

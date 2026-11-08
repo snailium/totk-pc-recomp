@@ -82,6 +82,11 @@ static const RTTarget g_ryza2 = {
     .init_counts = g_ryza2_inits,
     .init_count_n = 3,
     .present_interval_override = 1,
+    .split_draws_off = 1,
+    .feedback_off = 1,
+    .free_cores = 1,
+    .frame_queue = 1,
+    .vk_present = "mailbox",
 };
 
 const RTTarget *rt_target(void) { return &g_ryza2; }
