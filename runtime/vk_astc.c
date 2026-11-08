@@ -307,7 +307,7 @@ static int create_bc_pipeline(VkCtx *c) {
     for (uint32_t h = 0; h < c->mem_props.memoryHeapCount && h < VK_MAX_MEMORY_HEAPS; h++)
         if (c->mem_props.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT && c->mem_props.memoryHeaps[h].size > vram)
             vram = c->mem_props.memoryHeaps[h].size;
-    int on = e && *e ? *e != '0' : vram < (5ull << 30);
+    int on = e && *e ? *e != '0' : (vk_is_uma() || vram < (5ull << 30));
     if (!(e && *e))
         rt_log("vk: TOTK_ASTC_BC unset: BC3 %s (largest device-local heap %llu MiB)", on ? "on" : "off",
                (unsigned long long)(vram >> 20));

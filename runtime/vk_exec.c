@@ -832,7 +832,13 @@ static void maybe_split(VkExec *ex) {
             if (split_n < 0) split_n = 0;
         } else {
             const RTTarget *t = rt_target();
-            split_n = (t && t->split_draws_off) ? 0 : cfg_int("TOTK_SPLIT_DRAWS");
+            if (t && t->split_draws_off) {
+                split_n = 0;
+            } else if (vk_is_uma()) {
+                split_n = 0;
+            } else {
+                split_n = cfg_int("TOTK_SPLIT_DRAWS");
+            }
         }
         int us = cfg_int("TOTK_SPLIT_US");
         split_ns = us > 0 ? (uint64_t)us * 1000 : 0;
