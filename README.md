@@ -18,6 +18,21 @@
 > - [`ryza`](https://github.com/snailium/totk-pc-recomp/tree/ryza)：多游戏重编译扩展线，基于 `totk` 分支，集成 Target Seam 抽象与通用 SDK 增强特性。
 > - 详细同步维护指南请查阅 [docs/WORKFLOW.md](docs/WORKFLOW.md)。
 > - 所有被上游拒收的通用 PR 及技术复盘详见 [GitHub Issues](https://github.com/snailium/totk-pc-recomp/issues)。
+>
+> **主要测试环境 (Primary Testbed):**  
+> 本 Fork 的核心开发与实机验证基于 **AMD BC-250 APU**（16 GB GDDR6 统一内存架构 UMA），专注于 APU / 集显 / 掌机设备下的高效率原生运行。
+
+## Primary Testbed: AMD BC-250 (APU & UMA)
+
+本 Fork 的主要实机开发、性能调优与自动化测试平台为 **AMD BC-250**（Cyan Skillfish / Oberon 衍生架构）：
+
+- **SoC / APU 规格**: AMD Zen 2 CPU（8 核 16 线程，双 CCX 拓扑）+ AMD RDNA2 GPU（GFX1013，Mesa RADV，支持 Vulkan 1.3 / 1.4）。
+- **统一内存架构 (UMA, Unified Memory Architecture)**:
+  - 板载 16 GB 高速 GDDR6 统一寻址物理内存，由 CPU 与 GPU 共享，消除了独立显卡（dGPU）在 PCIe 总线上的传输瓶颈与显存镜像拷贝开销。
+  - **针对 UMA 硬件的专项深度优化 (Automatic UMA Tuning)**:
+    - 运行时自动检测集显/APU/UMA 拓扑并应用最优预设（`split_draws = 0`、`frame_queue = 1`、`astc_bc = 1`、`tex_vram_pressure = 80%`），有效避免了在统一内存总线上的 `shadow_sync` 锁争抢与指令分段卡顿。
+    - **Linux 硬件级传感器监控 (PR #952)**: 针对 AMD APU 缺少传统 `gpu_busy_percent` 的情况，通过直接解析 Linux 内核 `gpu_metrics` 二进制结构与 hwmon 传感器，在 OSD 性能浮层中精准呈现 GPU 占用率、运行频率与温度。
+  - **实机运行表现**: 在 BC-250 实测中，TotK 在 3D 大世界下稳定锁定 **60 FPS**（GPU 占用仅 ~22%）；《莱莎2》稳定在 **50~60 FPS**。
 
 **TotK Recomp** is a static recompilation of *The Legend of Zelda: Tears of the Kingdom* (Nintendo Switch, 2023) into a native x86-64 application for Windows and Linux ([docs/architecture.md](docs/architecture.md)).
 
