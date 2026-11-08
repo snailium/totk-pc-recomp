@@ -1858,7 +1858,32 @@ void plat_gpu_load(PlatLoad *l, float *load_pct, float *vram_used_mb) {
     char path[300];
     uint64_t v;
     snprintf(path, sizeof path, "%s/gpu_busy_percent", l->gpu);
-    if (read_u64_file(path, &v)) *load_pct = (float)v;
+    if (read_u64_file(path, &v)) {
+        *load_pct = (float)v;
+    } else {
+        snprintf(path, sizeof path, "%s/gpu_metrics", l->gpu);
+        FILE *f = fopen(path, "rb");
+        if (f) {
+            uint8_t buf[256];
+            size_t n = fread(buf, 1, sizeof buf, f);
+            fclose(f);
+            if (n >= 4) {
+                uint8_t fmt = buf[2];
+                uint16_t act = 0xffff;
+                if (fmt == 1 && n >= 26) {
+                    act = (uint16_t)buf[24] | ((uint16_t)buf[25] << 8);
+                } else if (fmt == 2 && n >= 30) {
+                    act = (uint16_t)buf[28] | ((uint16_t)buf[29] << 8);
+                } else if (fmt == 3 && n >= 44) {
+                    act = (uint16_t)buf[42] | ((uint16_t)buf[43] << 8);
+                }
+                if (act != 0xffff) {
+                    *load_pct = act > 100 ? (float)act / 100.0f : (float)act;
+                    if (*load_pct > 100.0f) *load_pct = 100.0f;
+                }
+            }
+        }
+    }
     snprintf(path, sizeof path, "%s/mem_info_vram_used", l->gpu);
     if (read_u64_file(path, &v)) *vram_used_mb = (float)(v >> 20);
 }

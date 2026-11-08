@@ -8,6 +8,7 @@
 
 #include "cfg.h"
 #include "host.h"
+#include "target.h"
 #include "vk.h"
 #include "platform/platform.h"
 #include "vk_dlaa.h"
@@ -318,6 +319,11 @@ static int create_device(void) {
     g_vk.has_astc_ldr = h->textureCompressionASTC_LDR;
     {
         const char *e = cfg_get("TOTK_FEEDBACK");
+        if (!e || !*e) e = cfg_get("FEEDBACK");
+        if (!e || !*e) {
+            const RTTarget *t = rt_target();
+            if (t && t->feedback_off) e = "0";
+        }
         int layout_ok = has_fbl && has_lr && c->fbl.attachmentFeedbackLoopLayout && c->lr.dynamicRenderingLocalRead;
         g_vk.feedback = e && !strcmp(e, "0") ? VK_FEEDBACK_OFF
                       : layout_ok && !(e && !strcmp(e, "restart")) ? VK_FEEDBACK_LAYOUT : VK_FEEDBACK_RESTART;

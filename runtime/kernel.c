@@ -16,6 +16,7 @@
 #include "host.h"
 #include "kernel.h"
 #include "platform/platform.h"
+#include "target.h"
 
 #define R_OK 0u
 #define R_TIMEOUT KERN_R_TIMEOUT
@@ -337,7 +338,14 @@ static void ap_init(void);
 
 static int cores_enabled(void) {
     if (g_cores_on < 0) {
-        g_cores_on = !cfg_bool("TOTK_FREE_CORES");   // "0" keeps the gate, like unset
+        const char *e = cfg_get("TOTK_FREE_CORES");
+        if (!e || !*e) e = cfg_get("FREE_CORES");
+        if (e && *e) {
+            g_cores_on = !cfg_bool("TOTK_FREE_CORES");
+        } else {
+            const RTTarget *t = rt_target();
+            g_cores_on = !(t && t->free_cores);
+        }
         if (!g_cores_on)
             rt_log("kernel: WARNING: free_cores = 1 (TOTK_FREE_CORES) turns the virtual core gate off. This is an "
                    "experimental mode and the game crashes or hangs in it, usually at start. Set free_cores = 0 in "

@@ -49,6 +49,11 @@ typedef struct RTTarget {
     int init_count_n;
     // Present interval override: 0 = follow game (default), 1 = force 60 Hz interval, etc.
     int present_interval_override;
+    int split_draws_off;
+    int feedback_off;
+    int free_cores;
+    int frame_queue;
+    const char *vk_present;
     // Function hooks: replaces indirect dispatch table slots at boot time without instruction patching.
     const RTFuncHook *func_hooks;
     int func_hook_n;

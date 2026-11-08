@@ -24,6 +24,7 @@
 #include "gfx_wsys.h"
 #include "nvn_api.h"
 #include "platform/platform.h"
+#include "target.h"
 #include "ui/menu.h"
 #include "vk.h"
 
@@ -235,6 +236,16 @@ uint64_t gfx_vsync_time_ns(uint64_t tick) { return (uint64_t)g_vs_start_ns + tic
 int gfx_window_focused(void) { return g_focused; }
 unsigned gfx_window_focus_messages(void) { return (unsigned)g_focus_msgs; }
 
+static const char *get_present_setting(void) {
+    const char *e = cfg_get("TOTK_VK_PRESENT");
+    if (!e || !*e) e = cfg_get("VK_PRESENT");
+    if (!e || !*e) {
+        const RTTarget *t = rt_target();
+        if (t && t->vk_present) return t->vk_present;
+    }
+    return cfg_value("TOTK_VK_PRESENT");
+}
+
 // Present path (g_pl held): a settings change (cfg_version) reaches the window thread, which applies a changed size or
 // fullscreen; a changed TOTK_VK_PRESENT rebuilds the swapchain at this present.
 static void window_settings_live(void) {
@@ -245,7 +256,7 @@ static void window_settings_live(void) {
     if (started && v == seen) return;
     seen = v;
     res_fov_live();
-    const char *e = cfg_value("TOTK_VK_PRESENT");
+    const char *e = get_present_setting();
     if (!started || strncmp(e, present, sizeof present - 1)) {
         snprintf(present, sizeof present, "%s", e);
         if (started) plat_xchg32(&g_dirty, 1);
@@ -258,7 +269,7 @@ static void window_settings_live(void) {
 static const char *g_present_got = "";   // the TOTK_VK_PRESENT value of the mode the swapchain got; "" before one
 
 static VkPresentModeKHR pick_present_mode(VkPhysicalDevice pd) {
-    const char *e = cfg_value("TOTK_VK_PRESENT");
+    const char *e = get_present_setting();
     VkPresentModeKHR want = !strcmp(e, "mailbox") ? VK_PRESENT_MODE_MAILBOX_KHR
                           : !strcmp(e, "immediate") ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR;
     uint32_t n = 0;
