@@ -796,7 +796,12 @@ static uint64_t drop_clean(uint64_t need, uint64_t freed, int *dropped, int step
 static void sweep_pressure(void) {   // tex_lock held
     if (vram_pressure < 0) {
         const char *s = cfg_get("TOTK_TEX_VRAM_PRESSURE");
-        vram_pressure = s && *s ? atoi(s) : 90;
+        if (!s || !*s) s = cfg_get("TEX_VRAM_PRESSURE");
+        if (s && *s) {
+            vram_pressure = atoi(s);
+        } else {
+            vram_pressure = vk_is_uma() ? 80 : 90;
+        }
         if (vram_pressure < 0 || vram_pressure > 100) vram_pressure = 90;
         const char *m = cfg_get("TOTK_TEX_RELEASED_MIB");
         released_cap = (m && *m ? strtoull(m, NULL, 10) : 256) << 20;

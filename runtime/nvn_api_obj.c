@@ -719,7 +719,13 @@ NVN_API(nvnQueuePresentTexture) {
     nvn_sync_ahead_present();
     gfx_backend()->present(t, o->crop, slot);
     o->ticket[idx] = o->presents;
-    o->avail[idx] = cfg_bool("TOTK_FRAME_QUEUE") ? slot : slot + period;
+    int fq = cfg_bool("TOTK_FRAME_QUEUE");
+    const char *fq_e = cfg_get("TOTK_FRAME_QUEUE");
+    if (!fq_e || !*fq_e) fq_e = cfg_get("FRAME_QUEUE");
+    if (!fq_e || !*fq_e) {
+        if (vk_is_uma()) fq = 1;
+    }
+    o->avail[idx] = fq ? slot : slot + period;
     frame_step_present(slot, o->interval);   // frame_rate.c: the real-time step follows the display times
     rt_frame_presented(t, o->presents);
 }
