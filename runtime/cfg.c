@@ -132,7 +132,7 @@ static const CfgMeta metas[] = {
     // HDR output (vk_hdr.c): on at start (the tonemap shader is swapped as shaders load); the nits apply at once
     {"HDR", "0", "0|1", RESTART}, {"HDR_PEAK_NITS", "1000", "400..10000", LIVE}, {"HDR_GAME_NITS", "203", "80..500", LIVE},
     {"HDR_UI_NITS", "203", "80..500", LIVE}, {"HDR_HUE", "80", "0..100", LIVE},
-    {"DEVICE_PROFILE", "auto", "auto|desktop|deck", RESTART},
+    {"DEVICE_PROFILE", "auto", "auto|desktop|deck|uma", RESTART},
     {"SHADOW_RES", "game", "game|256|512|768|1024|1536|2048", RESTART},
     {"SHADOW_SCALE", "1", "1..4", RESTART},
     {"SHADOW_RANGE", "100", "50..400", RESTART}, {"CONTACT_SHADOWS", "0", "0..100", RESTART},
@@ -315,13 +315,17 @@ static int profile_of(void) {
     if (p >= 0) return p;
     const char *set = raw_get(PREFIX "DEVICE_PROFILE");
     if (set && !strcmp(set, "deck")) p = 1;
+    else if (set && !strcmp(set, "uma")) p = 2;
     else if (set && *set && strcmp(set, "auto")) p = 0;
-    else p = on_steam_deck();
+    else p = on_steam_deck() ? 1 : 0;
     __atomic_store_n(&profile, p, __ATOMIC_RELEASE);
     return p;
 }
 
-const char *cfg_device_profile(void) { return profile_of() ? "deck" : "desktop"; }
+const char *cfg_device_profile(void) {
+    int p = profile_of();
+    return p == 1 ? "deck" : p == 2 ? "uma" : "desktop";
+}
 
 static const char *raw_get(const char *name) {
     const char *e = getenv(name);

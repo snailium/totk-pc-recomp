@@ -319,6 +319,7 @@ uint64_t frame_step_ticks(void);                           // game time since th
 int rt_ab(void);
 int rt_knob(const char *name, const char *def);
 #define RT_KNOB_ON(mode) ((mode) == 2 ? rt_ab() : (mode))
+int vk_is_uma(void);
 void frame_step_present(uint64_t display_ns, int interval); // nvnQueuePresentTexture: the frame's display time and
                                                            // present interval (60 Hz ticks)
 // ---- boot (boot.c, main.c)

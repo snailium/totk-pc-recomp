@@ -729,7 +729,12 @@ static uint64_t drop_overwritten(uint64_t need, int *dropped) {
 static void sweep_pressure(void) {   // tex_lock held
     if (vram_pressure < 0) {
         const char *s = cfg_get("TOTK_TEX_VRAM_PRESSURE");
-        vram_pressure = s && *s ? atoi(s) : 90;
+        if (!s || !*s) s = cfg_get("TEX_VRAM_PRESSURE");
+        if (s && *s) {
+            vram_pressure = atoi(s);
+        } else {
+            vram_pressure = vk_is_uma() ? 80 : 90;
+        }
         if (vram_pressure < 0 || vram_pressure > 100) vram_pressure = 90;
         rt_log("vk: released textures under VRAM pressure: %s%d%%", vram_pressure ? "dropped above " : "off", vram_pressure);
     }

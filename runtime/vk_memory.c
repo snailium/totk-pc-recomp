@@ -2116,6 +2116,15 @@ static void vram_log(uint64_t frame) {
     vk_texture_released_log(frame);
 }
 
+static int g_is_uma = -1;
+
+int vk_is_uma(void) {
+    const char *dp = cfg_get("TOTK_DEVICE_PROFILE");
+    if (dp && (!strcmp(dp, "uma") || !strcmp(dp, "deck"))) return 1;
+    if (dp && !strcmp(dp, "desktop")) return 0;
+    return g_is_uma > 0;
+}
+
 // Device class: INTEGRATED -> uma; a discrete GPU with a DEVICE_LOCAL heap of 1 GiB or more beside a
 // heap that is not device-local (host memory) -> discrete; otherwise uma (import everywhere). Sets the mirror mode.
 void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDeviceMemoryProperties *m) {
@@ -2135,6 +2144,10 @@ void vk_mem_class_log(const VkPhysicalDeviceProperties *p, const VkPhysicalDevic
     else if (host_heap < 0) cls = "uma", why = "every heap is device-local";
     else cls = "discrete", why = "device-local heap separate from host memory";
     int discrete = cls[0] == 'd';
+    g_is_uma = !discrete;
+    if (!discrete) {
+        rt_log("cfg: hardware profile UMA active (defaults: split_draws=0, frame_queue=1, astc_bc=1, tex_vram_pressure=80%%)");
+    }
     char line[2048];
     size_t k = (size_t)snprintf(line, sizeof line, "mem: class %s (%s; device type %d %s, %s)", cls, why, t, tn, p->deviceName);
     for (uint32_t h = 0; h < m->memoryHeapCount; h++)

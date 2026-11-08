@@ -830,8 +830,18 @@ static uint64_t n_parts, n_subs;
 
 static void maybe_split(VkExec *ex) {
     if (split_n < 0) {
-        split_n = cfg_int("TOTK_SPLIT_DRAWS");
-        if (split_n < 0) split_n = 0;
+        const char *e = cfg_get("TOTK_SPLIT_DRAWS");
+        if (!e || !*e) e = cfg_get("SPLIT_DRAWS");
+        if (e && *e) {
+            split_n = atoi(e);
+            if (split_n < 0) split_n = 0;
+        } else {
+            if (vk_is_uma()) {
+                split_n = 0;
+            } else {
+                split_n = cfg_int("TOTK_SPLIT_DRAWS");
+            }
+        }
         int us = cfg_int("TOTK_SPLIT_US");
         split_ns = us > 0 ? (uint64_t)us * 1000 : 0;
         rt_log("vk: replay command buffer split every %d draws between passes, parts of at least %d us%s", split_n,
