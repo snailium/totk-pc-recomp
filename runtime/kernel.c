@@ -51,7 +51,6 @@ void kern_main_thread_attrs(uint64_t stack, int prio, int core) {
     g_main_prio = prio;
     g_main_core = core;
 }
-}
 #define FIBER_MAX 1024
 
 enum { O_FREE, O_THREAD, O_EVENT_R, O_EVENT_W, O_SESSION = KERN_SESSION, O_TMEM = KERN_TMEM };
@@ -2194,8 +2193,6 @@ void *kern_handle_get(uint32_t h, int kind) {
     unlock();
     return o;
 }
-
-uint32_t kern_current_thread_handle(void) { return tcur ? tcur->handle : 0; }
 
 // Diagnostics: does this handle name an event, and which end? Used to follow an event from its creator to the service
 // that is supposed to signal it.

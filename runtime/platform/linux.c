@@ -111,6 +111,10 @@ PlatThread *plat_thread_new(PlatThreadFn fn, void *arg, const char *name) {
     return plat_thread_new_ex(fn, arg, name, 0);
 }
 
+static uint64_t g_thread_default_affinity;
+
+void plat_thread_set_default_affinity(uint64_t mask) { g_thread_default_affinity = mask; }
+
 PlatThread *plat_thread_new_ex(PlatThreadFn fn, void *arg, const char *name, size_t stack) {
     PlatThread *t = calloc(1, sizeof *t);
     if (!t) return NULL;
@@ -121,10 +125,26 @@ PlatThread *plat_thread_new_ex(PlatThreadFn fn, void *arg, const char *name, siz
     pthread_attr_init(&a);
     // The stack is mapped lazily, as Windows reserves it: only the pages a thread touches cost memory.
     pthread_attr_setstacksize(&a, stack ? stack : PLAT_STACK_DEFAULT);
+    if (g_thread_default_affinity) {
+        cpu_set_t set;
+        CPU_ZERO(&set);
+        for (int i = 0; i < 64; i++)
+            if (g_thread_default_affinity >> i & 1) CPU_SET(i, &set);
+        pthread_attr_setaffinity_np(&a, sizeof set, &set);
+    }
     int e = pthread_create(&t->t, &a, thread_main, t);
     pthread_attr_destroy(&a);
     if (e) { free(t); return NULL; }
     return t;
+}
+
+void plat_thread_pin(uint64_t mask) {
+    if (!mask) return;
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    for (int i = 0; i < 64; i++)
+        if (mask >> i & 1) CPU_SET(i, &set);
+    pthread_setaffinity_np(pthread_self(), sizeof set, &set);
 }
 
 static int read_u64_file(const char *path, uint64_t *v);
@@ -151,6 +171,74 @@ int plat_cpu_cores(uint64_t *all, uint64_t *first) {
         if (k == cores) seen[cores][0] = core, seen[cores][1] = pkg, cores++, *first |= 1ull << i;
     }
     return cores;
+}
+
+static int cpu_vendor_is_amd(void) {
+    FILE *f = fopen("/proc/cpuinfo", "r");
+    if (!f) return 0;
+    char line[256];
+    int amd = 0;
+    while (fgets(line, sizeof line, f)) {
+        if (strncmp(line, "vendor_id", 9)) continue;
+        amd = strstr(line, "AuthenticAMD") != NULL;
+        break;
+    }
+    fclose(f);
+    return amd;
+}
+
+static uint64_t l3_group_of(int cpu) {
+    char path[96], buf[64] = {0};
+    snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cache/index3/shared_cpu_map", cpu);
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    int got = fscanf(f, "%63s", buf) == 1;
+    fclose(f);
+    return got ? strtoull(buf, NULL, 16) : 0;
+}
+
+static int cpu_groups_read(uint64_t masks[2]) {
+    masks[0] = masks[1] = 0;
+    uint64_t all = 0, one = 0;
+    if (!plat_cpu_cores(&all, &one) || !all) return 0;
+    uint64_t groups[16];
+    int n = 0;
+    if (cpu_vendor_is_amd()) {
+        for (int i = 0; i < 64 && n < (int)(sizeof groups / sizeof *groups); i++) {
+            if (!(all >> i & 1)) continue;
+            uint64_t m = l3_group_of(i) & all;
+            if (!m) continue;
+            int found = 0;
+            for (int k = 0; k < n; k++) if (groups[k] == m) { found = 1; break; }
+            if (!found) groups[n++] = m;
+        }
+    }
+    if (n < 2) {
+        masks[0] = all;
+        return 1;
+    }
+    for (int i = 0; i < n - 1; i++) {
+        for (int j = i + 1; j < n; j++) {
+            int ci = __builtin_popcountll(groups[i]), cj = __builtin_popcountll(groups[j]);
+            if (cj > ci || (cj == ci && groups[j] < groups[i])) {
+                uint64_t tmp = groups[i]; groups[i] = groups[j]; groups[j] = tmp;
+            }
+        }
+    }
+    masks[0] = groups[0];
+    masks[1] = groups[1];
+    return 2;
+}
+
+int plat_cpu_groups(uint64_t masks[2]) {
+    static int cached = -1;
+    static uint64_t cached_masks[2];
+    if (cached < 0) {
+        cached = cpu_groups_read(cached_masks);
+    }
+    masks[0] = cached_masks[0];
+    masks[1] = cached_masks[1];
+    return cached;
 }
 
 // Linux has no process-wide affinity: each thread of /proc/self/task gets the mask, and threads started later inherit
