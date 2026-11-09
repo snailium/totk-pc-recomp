@@ -412,13 +412,21 @@ void nvn_pins_stats(uint64_t *live, uint64_t *freed) {
 // deferred: 0 unknown, 1 none, 2 some; pins: texture pins its ops name, counted in their refs; pin_v: those pins, in
 // record order, or NULL (then pin_refs walks the records); cap: bytes of the block from the large-block cache
 // (copy_block), 0 for a plain heap block
-typedef struct { uint64_t magic, bytes, made_at, used_at, deferred, pins, cap; const tex_t **pin_v; } copy_prefix;
+typedef struct copy_prefix copy_prefix;
+struct copy_prefix {
+    uint64_t magic, bytes, made_at, used_at, deferred, pins, cap;
+    const tex_t **pin_v;
+    uintptr_t ctl_lo;
+    const void *recorder;
+    copy_prefix *next_of_cmd;
+};
 _Static_assert(sizeof(copy_prefix) % 8 == 0, "records stay 8-byte aligned");
 typedef struct { uintptr_t lo, hi; uint8_t *copy; } cmd_copy;
 typedef struct { cmd_copy *v; uint32_t n, cap; } copy_bucket;
 static PlatMutex copy_lock = PLAT_MUTEX_INIT;    // guards the two maps, the counters and every prefix
 static nvn_hmap copy_pages = {.klen = 8};   // page -> copy_bucket
 static nvn_hmap copy_live = {.klen = 8};    // handle -> copy_prefix of a live copy
+static nvn_hmap cmd_copies = {.klen = 8};   // cmd_t* -> copy_prefix* (head of copies recorded by cmd_t)
 static uint64_t ncopies, copy_bytes, copies_made;
 // Asynchronous replay: copies released by the game, and per-submission clones, that a queued submission still reads.
 // Freed once gfx_replayed_submits() reaches their used_at. Empty with synchronous replay.
@@ -552,6 +560,61 @@ static void zombie_sweep(uint64_t replayed) {   // copy_lock held; the swept cop
     }
 }
 
+// Retires a live recording copy under copy_lock, unlinking from copy_live and copy_pages.
+static void copy_retire_locked(copy_prefix *pf, uint64_t replayed) {
+    if (!pf || pf->magic != COPY_MAGIC) return;
+    uint64_t handle = (uintptr_t)(pf + 1);
+    nvn_hm_del(&copy_live, &handle);
+    ncopies--;
+    copy_bytes -= pf->bytes;
+    pf->magic = 0;
+    if (pf->ctl_lo) {
+        uintptr_t page = pf->ctl_lo >> COPY_PAGE_SHIFT;
+        copy_bucket *b = nvn_hm_get(&copy_pages, &page);
+        if (b) {
+            for (uint32_t i = 0; i < b->n; i++) {
+                if (b->v[i].copy == (uint8_t *)(pf + 1)) {
+                    b->v[i] = b->v[--b->n];
+                    break;
+                }
+            }
+            if (!b->n) {
+                nvn_hm_del(&copy_pages, &page);
+                free(b->v);
+                free(b);
+            }
+        }
+    }
+    if (pf->used_at > replayed) zombie_add(pf);
+    else dead_add(pf);
+}
+
+// Retires copies recorded by recorder that were submitted in previous frames and are no longer needed.
+static void cmd_retire_previous(const void *recorder) {
+    if (!recorder) return;
+    uint64_t replayed = gfx_replayed_submits();
+    plat_mutex_lock(&copy_lock);
+    if (nzombies) zombie_sweep(replayed);
+    copy_prefix *p = nvn_hm_get(&cmd_copies, &recorder);
+    copy_prefix *new_head = NULL, *tail = NULL;
+    while (p) {
+        copy_prefix *next = p->next_of_cmd;
+        if (p->used_at > 0 && p->magic == COPY_MAGIC) {
+            copy_retire_locked(p, replayed);
+        } else if (p->magic == COPY_MAGIC) {
+            p->next_of_cmd = NULL;
+            if (!new_head) new_head = p;
+            else tail->next_of_cmd = p;
+            tail = p;
+        }
+        p = next;
+    }
+    if (new_head) nvn_hm_put(&cmd_copies, &recorder, new_head);
+    else nvn_hm_del(&cmd_copies, &recorder);
+    plat_mutex_unlock(&copy_lock);
+    dead_free();
+}
+
 static copy_prefix *copy_find(uint64_t handle) {   // copy_lock held
     return nvn_hm_get(&copy_live, &handle);
 }
@@ -625,30 +688,39 @@ static uint8_t *flatten_recording(const uint8_t *p, size_t n) {
     return out + sizeof(copy_prefix);
 }
 
-static void copy_add(uintptr_t lo, uintptr_t hi, uint8_t *copy) {
+static void copy_add(uintptr_t lo, uintptr_t hi, uint8_t *copy, const void *recorder) {
     copy_prefix *pf = (copy_prefix *)copy - 1;
     uint64_t handle = (uintptr_t)copy;
-    uintptr_t page = lo >> COPY_PAGE_SHIFT;
     plat_mutex_lock(&copy_lock);
     pf->made_at = nsubmits;
-    copy_bucket *b = nvn_hm_get(&copy_pages, &page);
-    if (!b) {
-        b = calloc(1, sizeof *b);
-        if (!b) rt_fatal("nvn: command copy index");
-        nvn_hm_put(&copy_pages, &page, b);
+    pf->ctl_lo = lo;
+    pf->recorder = recorder;
+    if (lo || hi) {
+        uintptr_t page = lo >> COPY_PAGE_SHIFT;
+        copy_bucket *b = nvn_hm_get(&copy_pages, &page);
+        if (!b) {
+            b = calloc(1, sizeof *b);
+            if (!b) rt_fatal("nvn: command copy index");
+            nvn_hm_put(&copy_pages, &page, b);
+        }
+        if (b->n == b->cap) {
+            b->cap = b->cap ? b->cap * 2 : 8;
+            b->v = realloc(b->v, b->cap * sizeof *b->v);
+            if (!b->v) rt_fatal("nvn: command copy index");
+        }
+        b->v[b->n++] = (cmd_copy){lo, hi, copy};
     }
-    if (b->n == b->cap) {
-        b->cap = b->cap ? b->cap * 2 : 8;
-        b->v = realloc(b->v, b->cap * sizeof *b->v);
-        if (!b->v) rt_fatal("nvn: command copy index");
-    }
-    b->v[b->n++] = (cmd_copy){lo, hi, copy};
     nvn_hm_put(&copy_live, &handle, pf);
     ncopies++;
     copy_bytes += pf->bytes;
-    if (++copies_made % 20000 == 0)
-        NVN_LOG("recording copies: %llu made, %llu live, %.1f MiB, submit %llu", (unsigned long long)copies_made,
-                (unsigned long long)ncopies, copy_bytes / 1048576.0, (unsigned long long)nsubmits);
+    if (recorder) {
+        pf->next_of_cmd = nvn_hm_get(&cmd_copies, &recorder);
+        nvn_hm_put(&cmd_copies, &recorder, pf);
+    }
+    if (++copies_made % 5000 == 0)
+        rt_log("nvn: recording copies: live %llu, %.1f MiB (total %llu made, submit %llu)",
+               (unsigned long long)ncopies, copy_bytes / 1048576.0,
+               (unsigned long long)copies_made, (unsigned long long)nsubmits);
     plat_mutex_unlock(&copy_lock);
 }
 
@@ -706,6 +778,7 @@ NVN_API(nvnCommandBufferInitialize) {
 // void nvnCommandBufferFinalize(NVNcommandBuffer *cmd): handles outlive their recorder
 NVN_API(nvnCommandBufferFinalize) {
     cmd_t *o = cmd_of(c);
+    cmd_retire_previous(o);
     pool_put(o->seg, (size_t)(o->end - o->seg));
     o->seg = o->cur = o->end = NULL;
     o->magic = 0;
@@ -758,6 +831,7 @@ NVN_API(nvnCommandBufferGetCommandMemoryFree) { const cmd_t *o = cmd_of(c); ret_
 // void nvnCommandBufferBeginRecording(NVNcommandBuffer *cmd)
 NVN_API(nvnCommandBufferBeginRecording) {
     cmd_t *o = cmd_of(c);
+    cmd_retire_previous(o);
     if (o->recording) rt_log("nvn: BeginRecording on command buffer %p while it records", (void *)o);
     o->recording = 1;
     o->cur = o->seg;   // the previous recording was copied at EndRecording
@@ -777,10 +851,14 @@ NVN_API(nvnCommandBufferEndRecording) {
     o->recording = 0;
     uint8_t *copy = flatten_recording(o->seg, (size_t)(o->cur - o->seg));
     // Finalizing the recorder does not retire its handle; only reusing the control memory it was recorded in does.
-    uintptr_t lo = (uintptr_t)o->ctl + (o->ctl_used < o->ctl_size ? o->ctl_used : 0);
-    uintptr_t hi = o->ctl ? lo + 1 : 0;
-    o->ctl_used += CTL_PER_RECORDING;
-    copy_add(lo, hi, copy);
+    uintptr_t lo = 0, hi = 0;
+    if (o->ctl && o->ctl_size) {
+        if (o->ctl_used + CTL_PER_RECORDING > o->ctl_size) o->ctl_used = 0;
+        lo = (uintptr_t)o->ctl + o->ctl_used;
+        hi = lo + CTL_PER_RECORDING;
+        o->ctl_used += CTL_PER_RECORDING;
+    }
+    copy_add(lo, hi, copy, o);
     ret_x(c, (uintptr_t)copy);
 }
 // NVNboolean nvnCommandBufferIsRecording(const NVNcommandBuffer *cmd)
