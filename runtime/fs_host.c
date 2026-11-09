@@ -22,6 +22,7 @@
 
 #include "fs.h"
 #include "host.h"
+#include "target.h"
 #include "platform/platform.h"
 #include "romfs_path.h"
 
@@ -877,7 +878,25 @@ static int64_t host_read_at(PlatFile *f, void *buf, uint32_t n, uint64_t off) {
     return got < 0 ? -1 : got;
 }
 
+// A path under one of the title's own mount prefixes becomes the RomFS path it stands for (target.h: mount_aliases).
+static const char *alias_path(const char *path, char *buf, size_t cap) {
+    const RTMountAlias *a = rt_target()->mount_aliases;
+    if (!a || !path) return path;
+    for (; a->prefix; a++) {
+        size_t n = strlen(a->prefix);
+        if (strncmp(path, a->prefix, n)) continue;
+        const char *rest = path + n;
+        while (*rest == '/') rest++;   // "DISC:/Sound/x" and "DISC:Sound/x" are the same path; "//" would be rejected
+        if (*a->romfs_dir) snprintf(buf, cap, "rom:/%s/%s", a->romfs_dir, rest);
+        else snprintf(buf, cap, "rom:/%s", rest);
+        return buf;
+    }
+    return path;
+}
+
 static uint32_t open_file(uint64_t *out, const char *path, int mode) {
+    char abuf[PATH_CAP];
+    path = alias_path(path, abuf, sizeof abuf);
     if (romfs_owns(path)) return romfs_open(out, path, mode);
     fs_trace(mode & FS_OPEN_WRITE ? "write" : "read", path);
     if (!out || !(mode & (FS_OPEN_READ | FS_OPEN_WRITE)) || (mode & ~7)) return FS_R_INVALID_ARGUMENT;
@@ -1029,6 +1048,8 @@ static uint32_t rename_file(const char *from, const char *to) {
 }
 
 static uint32_t entry_type(int *out, const char *path) {
+    char abuf[PATH_CAP];
+    path = alias_path(path, abuf, sizeof abuf);
     if (romfs_owns(path)) return romfs_entry_type(out, path);
     char p[PATH_CAP];
     uint32_t r = host_path(path, p, sizeof p);
@@ -1060,6 +1081,8 @@ static uint32_t delete_recursive(const char *path) {
 }
 
 static uint32_t open_directory(uint64_t *out, const char *path, int mode) {
+    char abuf[PATH_CAP];
+    path = alias_path(path, abuf, sizeof abuf);
     if (!out || mode < 1 || mode > 3) return FS_R_INVALID_ARGUMENT;
     Listing l = {0};
     uint32_t r = 0;
@@ -1152,7 +1175,7 @@ static void ov_directory_count(Cpu *c) {
         ret_x(c, FS_R_INVALID_ARGUMENT);
         return;
     }
-    *out = d->l.n;
+    *out = d->n;
     ret_x(c, 0);
 }
 static void ov_read_directory(Cpu *c) { ret_x(c, read_directory(arg_p(c, 0), arg_p(c, 1), arg_x(c, 2), I64(3))); }
@@ -1168,6 +1191,8 @@ static void ov_save_exists(Cpu *c) {
     rt_log("fs: IsSaveDataExisting(app, uid) -> %#x", r);
     ret_x(c, r);
 }
+// The save data lives in the host profile and mount_save creates it when it is missing.
+static void ov_ensure_save(Cpu *c) { (void)c; ret_x(c, 0); }
 static void ov_mount_temp(Cpu *c) { ret_x(c, mount_temp(arg_p(c, 0))); }
 static void ov_unmount(Cpu *c) { unmount(arg_p(c, 0)); }
 static void ov_commit(Cpu *c) { ret_x(c, commit(arg_p(c, 0))); }
@@ -1203,9 +1228,11 @@ static void ov_set_priority(Cpu *c) { (void)c; }
 #define S_MOUNT_SAVE "_ZN2nn2fs13MountSaveDataEPKcRKNS_7account3UidE"
 #define S_MOUNT_SAVE_RO "_ZN2nn2fs21MountSaveDataReadOnlyEPKcNS_13ApplicationIdERKNS_7account3UidE"
 #define S_SAVE_EXISTS "_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE"
+#define S_ENSURE_SAVE "_ZN2nn2fs14EnsureSaveDataERKNS_7account3UidE"
 #define S_MOUNT_TEMP "_ZN2nn2fs21MountTemporaryStorageEPKc"
 #define S_UNMOUNT "_ZN2nn2fs7UnmountEPKc"
 #define S_COMMIT "_ZN2nn2fs6CommitEPKc"
+#define S_COMMIT_SAVE "_ZN2nn2fs14CommitSaveDataEPKc"
 #define S_CREATE_CACHE "_ZN2nn2fs18CreateCacheStorageEill"
 #define S_DELETE_CACHE "_ZN2nn2fs18DeleteCacheStorageEi"
 #define S_MOUNT_CACHE "_ZN2nn2fs17MountCacheStorageEPKci"
@@ -1251,9 +1278,11 @@ static void ov_save_exists_uid(Cpu *c) {
 }
 HOST_OVERRIDE("_ZN2nn2fs18IsSaveDataExistingERKNS_7account3UidE", ov_save_exists_uid);
 HOST_OVERRIDE(S_SAVE_EXISTS, ov_save_exists);
+HOST_OVERRIDE(S_ENSURE_SAVE, ov_ensure_save);
 HOST_OVERRIDE(S_MOUNT_TEMP, ov_mount_temp);
 HOST_OVERRIDE(S_UNMOUNT, ov_unmount);
 HOST_OVERRIDE(S_COMMIT, ov_commit);
+HOST_OVERRIDE(S_COMMIT_SAVE, ov_commit);
 HOST_OVERRIDE(S_CREATE_CACHE, ov_create_cache);
 HOST_OVERRIDE(S_DELETE_CACHE, ov_delete_cache);
 HOST_OVERRIDE(S_MOUNT_CACHE, ov_mount_cache);
