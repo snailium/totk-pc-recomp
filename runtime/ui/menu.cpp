@@ -358,6 +358,15 @@ static int fonts_up(float scale) {
         ImFontConfig mc;
         mc.MergeMode = true;
         mc.FontDataOwnedByAtlas = false;
+        if (size > 12 && !memcmp(data[i], "ttcf", 4)) {
+            int face = 0;
+            if (!strcmp(kCjk[i].lang, "ja")) face = 0;
+            else if (!strcmp(kCjk[i].lang, "ko")) face = 1;
+            else if (!strcmp(kCjk[i].lang, "zh-Hans")) face = 2;
+            else if (!strcmp(kCjk[i].lang, "zh-Hant")) face = 3;
+            if (stbtt_GetFontOffsetForIndex(data[i], face) >= 0)
+                mc.FontNo = face;
+        }
         fa->AddFontFromMemoryTTF(data[i], (int)size, 26.0f * scale, &mc, ranges[i].Data);
     }
     vk_queue_lock();   // the upload submits on the queue and waits for it
