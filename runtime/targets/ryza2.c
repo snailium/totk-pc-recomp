@@ -92,6 +92,7 @@ static const RTTarget g_ryza2 = {
     .feedback_off = 1,
     .free_cores = 1,
     .frame_queue = 1,
+    .replay_async_off = 1,
     .vk_present = "mailbox",
 };
 
