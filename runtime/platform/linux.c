@@ -1576,11 +1576,13 @@ static int fc_font_for(const char *lang, char *out, size_t cap) {
 // which are the normal layout on SteamOS and the distributions that predate fontconfig's own lookup.
 int plat_font_path(const char *lang, char *out, size_t cap) {
     static const char *files[] = {
+        "/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/google-noto-sans-cjk-vf-fonts/NotoSansCJK-VF.ttc",
     };
     if (!cjk_lang(lang)) return 0;
     char override[PATH_MAX];
@@ -1592,6 +1594,23 @@ int plat_font_path(const char *lang, char *out, size_t cap) {
     if (cfg_bool("TOTK_MENU_FONT_FONTCONFIG") && fc_font_for(lang, out, cap) && plat_file_exists(out)) return 1;
     for (size_t i = 0; i < sizeof files / sizeof *files; i++)
         if (plat_file_exists(files[i])) return snprintf(out, cap, "%s", files[i]) < (int)cap;
+
+    char cmd[128];
+    const char *fclang = !strcmp(lang, "zh-Hans") ? "zh-cn" : (!strcmp(lang, "zh-Hant") ? "zh-tw" : lang);
+    snprintf(cmd, sizeof cmd, "fc-match -f '%%{file}' ':lang=%s' 2>/dev/null", fclang);
+    FILE *p = popen(cmd, "r");
+    if (p) {
+        char buf[512];
+        if (fgets(buf, sizeof buf, p)) {
+            char *nl = strchr(buf, '\n');
+            if (nl) *nl = 0;
+            if (plat_file_exists(buf)) {
+                pclose(p);
+                return snprintf(out, cap, "%s", buf) < (int)cap;
+            }
+        }
+        pclose(p);
+    }
     return 0;
 }
 
