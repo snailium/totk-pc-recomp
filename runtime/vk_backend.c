@@ -29,6 +29,7 @@
 #include "vk.h"
 #include "vk_exec.h"
 #include "platform/platform.h"
+#include "target.h"
 #include "vk_dlaa.h"
 
 #define WEAK __attribute__((weak))
@@ -175,6 +176,7 @@ int vk_replay_async(void) {
         const char *v = cfg_value("TOTK_REPLAY_ASYNC");
         if (!v || !strcmp(v, "0") || !strcmp(v, "off")) on = 0;
         else if (!strcmp(v, "1") || !strcmp(v, "on")) on = 1;
+        else if (rt_target()->replay_async_off) on = 0;
         else {
             // Automatic: on when kernel.c put the guest and the host in separate affinity groups. Then this thread
             // works in the host's group while the guest keeps its own half, which is where the split pays; without a

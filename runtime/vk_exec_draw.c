@@ -801,11 +801,7 @@ static void answers_for(VkExec *ex, int st, const uint8_t *ctl, uint32_t mask, G
 }
 
 static const prog_t *stage_prog(const VkExec *ex, int stage) {
-    if (stage >= 0 && stage < 6) {
-        if (ex->prog_unbound & (1u << stage)) return NULL;
-        if (ex->progs[stage]) return ex->progs[stage];
-    }
-    return ex->prog;
+    return (stage >= 0 && stage < 6 && ex->progs[stage]) ? ex->progs[stage] : ex->prog;
 }
 
 // *present: the program has this stage. Returns NULL when it has not or the translation failed. pending (graphics
@@ -3605,19 +3601,15 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
     switch (op) {
     case OP_BIND_PROGRAM: {
         const p_bind_program *b = payload;
-        ex->prog_stages = b->stages;
-        uint32_t mask = (uint32_t)b->stages;
-        if (!mask || mask == NVN_SHADER_STAGE_BITS_LARGE) mask = 0x3f;
-        for (int i = 0; i < 6; i++)
-            if (mask & (1u << i)) ex->progs[i] = b->prog;
-        if (b->prog) {
-            ex->prog = b->prog;
-            ex->prog_unbound &= ~mask;
+        ex->prog = b->prog, ex->prog_stages = b->stages;
+        if (b->stages) {
+            for (int s = 0; s < 6; s++) {
+                if (b->stages & (1 << s))
+                    ex->progs[s] = b->prog;
+            }
         } else {
-            ex->prog_unbound |= mask;
-            ex->prog = NULL;
-            for (int i = 0; i < 6; i++)
-                if (ex->progs[i] && !(ex->prog_unbound & (1u << i))) { ex->prog = ex->progs[i]; break; }
+            for (int s = 0; s < 6; s++)
+                ex->progs[s] = b->prog;
         }
         bind_gen++;
         break;
