@@ -57,6 +57,7 @@ typedef struct RTTarget {
     int feedback_off;
     int free_cores;
     int frame_queue;
+    int replay_async_off;
     const char *vk_present;
 } RTTarget;
 
