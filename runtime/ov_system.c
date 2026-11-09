@@ -119,37 +119,48 @@ static void ov_desired_language(Cpu *c) {
     ret_x(c, v);
 }
 
+static const char *const g_language_codes[] = {
+    "ja",       // 0: nn::settings::Language_Japanese
+    "en-US",    // 1: nn::settings::Language_AmericanEnglish
+    "fr",       // 2: nn::settings::Language_French
+    "de",       // 3: nn::settings::Language_German
+    "it",       // 4: nn::settings::Language_Italian
+    "es",       // 5: nn::settings::Language_Spanish
+    "zh-CN",    // 6: nn::settings::Language_Chinese
+    "ko",       // 7: nn::settings::Language_Korean
+    "nl",       // 8: nn::settings::Language_Dutch
+    "pt",       // 9: nn::settings::Language_Portuguese
+    "ru",       // 10: nn::settings::Language_Russian
+    "zh-TW",    // 11: nn::settings::Language_Taiwanese
+    "en-GB",    // 12: nn::settings::Language_BritishEnglish
+    "fr-CA",    // 13: nn::settings::Language_CanadianFrench
+    "es-419",   // 14: nn::settings::Language_LatinAmericanSpanish
+    "zh-Hans",  // 15: nn::settings::Language_SimplifiedChinese
+    "zh-Hant",  // 16: nn::settings::Language_TraditionalChinese
+    "pt-BR",    // 17: nn::settings::Language_BrazilianPortuguese
+};
+#define N_LANGUAGE_CODES ((int)(sizeof g_language_codes / sizeof *g_language_codes))
+
 // nn::Result nn::settings::detail::MakeLanguageCode(LanguageCode *out, Language language): maps Language enum
 // to the 8-byte LanguageCode representation.
 static void ov_make_language_code(Cpu *c) {
-    static const char *const codes[] = {
-        "ja",       // 0: nn::settings::Language_Japanese
-        "en-US",    // 1: nn::settings::Language_AmericanEnglish
-        "fr",       // 2: nn::settings::Language_French
-        "de",       // 3: nn::settings::Language_German
-        "it",       // 4: nn::settings::Language_Italian
-        "es",       // 5: nn::settings::Language_Spanish
-        "zh-CN",    // 6: nn::settings::Language_Chinese
-        "ko",       // 7: nn::settings::Language_Korean
-        "nl",       // 8: nn::settings::Language_Dutch
-        "pt",       // 9: nn::settings::Language_Portuguese
-        "ru",       // 10: nn::settings::Language_Russian
-        "zh-TW",    // 11: nn::settings::Language_Taiwanese
-        "en-GB",    // 12: nn::settings::Language_BritishEnglish
-        "fr-CA",    // 13: nn::settings::Language_CanadianFrench
-        "es-419",   // 14: nn::settings::Language_LatinAmericanSpanish
-        "zh-Hans",  // 15: nn::settings::Language_SimplifiedChinese
-        "zh-Hant",  // 16: nn::settings::Language_TraditionalChinese
-        "pt-BR",    // 17: nn::settings::Language_BrazilianPortuguese
-    };
     uint64_t out = arg_x(c, 0);
     int lang = (int32_t)arg_x(c, 1);
-    const char *code = (lang >= 0 && lang < (int)(sizeof codes / sizeof *codes)) ? codes[lang] : "en-US";
+    const char *code = (lang >= 0 && lang < N_LANGUAGE_CODES) ? g_language_codes[lang] : "en-US";
     if (out) {
         memset((void *)(uintptr_t)out, 0, 8);
         memcpy((void *)(uintptr_t)out, code, strlen(code));
     }
     ret_x(c, 0);
+}
+
+// LanguageCode nn::settings::LanguageCode::Make(Language language): returns LanguageCode as uint64_t in x0
+static void ov_language_code_make_val(Cpu *c) {
+    int lang = (int32_t)arg_x(c, 0);
+    const char *code = (lang >= 0 && lang < N_LANGUAGE_CODES) ? g_language_codes[lang] : "ja";
+    uint64_t v = 0;
+    memcpy(&v, code, strlen(code));
+    ret_x(c, v);
 }
 
 static void ov_oe_initialize(Cpu *c) { (void)c; rt_log("oe: application environment: a local host process"); }
@@ -934,21 +945,18 @@ static void ov_copyright_image(Cpu *c) {
     ret_x(c, 0);
 }
 HOST_OVERRIDE("_ZN2nn2oe17SetCopyrightImageEPKvmiiiiNS0_16WindowOriginModeE", ov_copyright_image);
-// nn::Result nn::settings::detail::MakeLanguageCode(LanguageCode *out, Language language): on hardware this asks the "set"
-// service; the port answers from the same table the rest of the system layer uses. A LanguageCode is eight bytes.
-static void ov_make_language_code(Cpu *c) {
-    static const char *codes[16] = {"en-US", "en-GB", "fr",     "de",     "es",     "es-419", "it",   "nl",
-                                    "fr-CA", "pt",    "pt-BR",  "ru",     "ja",     "zh-Hant", "zh-Hans", "ko"};
-    uint64_t out = arg_x(c, 0);
-    int lang = (int32_t)arg_x(c, 1);
-    const char *code = (lang >= 0 && lang < 16) ? codes[lang] : "en-US";
-    if (out) {
-        memset((void *)(uintptr_t)out, 0, 8);
-        memcpy((void *)(uintptr_t)out, code, strlen(code));
-    }
+HOST_OVERRIDE("_ZN2nn8settings6detail16MakeLanguageCodeEPNS0_12LanguageCodeENS0_8LanguageE", ov_make_language_code);
+HOST_OVERRIDE("_ZN2nn8settings12LanguageCode4MakeENS0_8LanguageE", ov_language_code_make_val);
+
+// nn::Result nn::friends::detail::ShimLibraryGlobal::Initialize(): brings up the friend service through a subdomain client,
+// which the port does not serve. There is no friend data offline, so the library reports itself up and every query the
+// title makes is answered by the overrides below when it makes one.
+static void ov_friends_initialize(Cpu *c) {
+    (void)c;
+    rt_log("friends: offline, the friend service is not brought up");
     ret_x(c, 0);
 }
-HOST_OVERRIDE("_ZN2nn8settings6detail16MakeLanguageCodeEPNS0_12LanguageCodeENS0_8LanguageE", ov_make_language_code);
+HOST_OVERRIDE("_ZN2nn7friends6detail17ShimLibraryGlobal10InitializeEv", ov_friends_initialize);
 
 // int nn::aoc::CountAddOnContent(): the SDK asks before any service session exists, and the lifted function dereferences
 // its uninitialised service object; the port has no add-on content, so the answer is zero.
