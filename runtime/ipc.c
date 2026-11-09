@@ -24,9 +24,20 @@ enum { T_CLOSE = 2, T_REQUEST = 4, T_CONTROL = 5, T_REQUEST_CTX = 6, T_CONTROL_C
        T_TIPC_BASE = 16 };
 
 // Services sm: hands out. Anything else is a named fatal.
+// The friend service, offline: at start-up the SDK only asks what it has to bring up, and the port answers "nothing".
+// Logging the command keeps the door open for the ones whose answer the title actually reads.
+static void friend_handler(IpcSession *s, const IpcRequest *rq, IpcResponse *rs) {
+    (void)s;
+    rs->result = 0;
+    rs->data_size = 0;
+    static int said;
+    if (!said++) rt_log("friend: command %u answered with success and no data", rq->cmd);
+}
+
 static const struct { const char *name; IpcHandler handler; } services[] = {
     {"audren:u", audren_manager_handler},
     {"nfp:user", nfp_user_manager_handler},
+    {"friend:u", friend_handler},
 };
 
 static volatile int32_t g_live;
