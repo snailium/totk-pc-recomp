@@ -800,6 +800,14 @@ static void answers_for(VkExec *ex, int st, const uint8_t *ctl, uint32_t mask, G
     if (locked) vk_texture_unlock();
 }
 
+static const prog_t *stage_prog(const VkExec *ex, int stage) {
+    if (stage >= 0 && stage < 6) {
+        if (ex->prog_unbound & (1u << stage)) return NULL;
+        if (ex->progs[stage]) return ex->progs[stage];
+    }
+    return ex->prog;
+}
+
 // *present: the program has this stage. Returns NULL when it has not or the translation failed. pending (graphics
 // stages, vk_pipeline_async_on): a shader not translated yet is queued and NULL returned with *pending = 1. await: a
 // shader queued earlier is waited for (gfx_shader_await) instead.
@@ -810,7 +818,7 @@ static const GfxShader *shader_for(VkExec *ex, int st, int *present, int *pendin
     uint32_t len;
     *present = 0;
     if (pending) *pending = 0;
-    const prog_t *p = (st >= 0 && st < 6 && ex->progs[st]) ? ex->progs[st] : ex->prog;
+    const prog_t *p = stage_prog(ex, st);
     if (!p || !find_stage(p, st, &ctl, &code, &len)) return NULL;
     *present = 1;
     GfxShaderAnswers a;
@@ -989,7 +997,7 @@ static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
     VkDescriptorBufferInfo bi;
     if (slot == 0 && c0_on()) return c0_info(ex, st);
     if (slot == 1) {   // compiler constants stored after the shader code
-        const prog_t *p = (st >= 0 && st < 6 && ex->progs[st]) ? ex->progs[st] : ex->prog;
+        const prog_t *p = stage_prog(ex, st);
         const uint8_t *ctl, *code;
         uint32_t len, c1;
         if (p && find_stage(p, st, &ctl, &code, &len)) {
@@ -1774,8 +1782,8 @@ static int bind_sig(const VkExec *ex, const VkPipeInfo *info) {
     uint32_t n = 0;
 #define PUT(v) do { uint64_t v_ = (uint64_t)(v); diff |= h[n] ^ v_; h[n++] = v_; } while (0)
     PUT((uintptr_t)info);
-    const prog_t *pvs = ex->progs[NVN_STAGE_VS] ? ex->progs[NVN_STAGE_VS] : ex->prog;
-    const prog_t *pfs = ex->progs[NVN_STAGE_FS] ? ex->progs[NVN_STAGE_FS] : ex->prog;
+    const prog_t *pvs = stage_prog(ex, NVN_STAGE_VS);
+    const prog_t *pfs = stage_prog(ex, NVN_STAGE_FS);
     PUT((uintptr_t)pvs);
     PUT(pvs ? pvs->serial : 0);
     PUT((uintptr_t)pfs);
@@ -1949,6 +1957,7 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
         }
         nd += cnt;
     }
+    if (n_sets == 2 && lo[1] == info->n_bindings) d0[1] = nd;
     // Under the validation layer, a new graphics layout binds set 1 before set 0 is pushed or bound. The layer (SDK
     // 1.4.363, PipelineLayoutCompatDef::operator==) takes any two INDEPENDENT_SETS layouts as compatible, so
     // vkCmdPushDescriptorSetKHR keeps the push set it made for an earlier layout and drops writes to bindings that
@@ -2188,9 +2197,9 @@ typedef struct {
 static struct { int on, valid, has_fs; MemoKey k; const GfxShader *vs, *fs; } SM = {-1};
 
 static void memo_key(const VkExec *ex, uint32_t gen, MemoKey *k) {
-    k->prog[0] = ex->progs[NVN_STAGE_VS] ? ex->progs[NVN_STAGE_VS] : ex->prog;
+    k->prog[0] = stage_prog(ex, NVN_STAGE_VS);
     k->serial[0] = k->prog[0] ? k->prog[0]->serial : 0;
-    k->prog[1] = ex->progs[NVN_STAGE_FS] ? ex->progs[NVN_STAGE_FS] : ex->prog;
+    k->prog[1] = stage_prog(ex, NVN_STAGE_FS);
     k->serial[1] = k->prog[1] ? k->prog[1]->serial : 0;
     k->gen = gen, k->tex_serial = ex->tex_serial;
     memcpy(k->tex[0], ex->tex[NVN_STAGE_VS], sizeof k->tex[0]), memcpy(k->tex[1], ex->tex[NVN_STAGE_FS], sizeof k->tex[1]);
@@ -2199,8 +2208,8 @@ static void memo_key(const VkExec *ex, uint32_t gen, MemoKey *k) {
 }
 
 static int memo_match(const VkExec *ex, uint32_t gen, MemoKey *k) {
-    const prog_t *p0 = ex->progs[NVN_STAGE_VS] ? ex->progs[NVN_STAGE_VS] : ex->prog;
-    const prog_t *p1 = ex->progs[NVN_STAGE_FS] ? ex->progs[NVN_STAGE_FS] : ex->prog;
+    const prog_t *p0 = stage_prog(ex, NVN_STAGE_VS);
+    const prog_t *p1 = stage_prog(ex, NVN_STAGE_FS);
     if (k->prog[0] != p0 || (p0 && k->serial[0] != p0->serial)) return 0;
     if (k->prog[1] != p1 || (p1 && k->serial[1] != p1->serial)) return 0;
     if (k->gen != gen || memcmp(&k->pipe, &ex->pipe, sizeof k->pipe)) return 0;
@@ -2242,7 +2251,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     vk_exec_pass_begin(ex);
     VkRect2D sc = vk_exec_scissor(ex);
     if (!sc.extent.width || !sc.extent.height) return 0;
-    const prog_t *pvs = ex->progs[NVN_STAGE_VS] ? ex->progs[NVN_STAGE_VS] : ex->prog;
+    const prog_t *pvs = stage_prog(ex, NVN_STAGE_VS);
     if (!pvs) return warn_once(W_PROGRAM, "a draw without a bound program is skipped"), 0;
     int has_vs, has_fs, vs_wait = 0, fs_wait = 0, memo = shader_memo_on();
     const GfxShader *vs, *fs;
@@ -3266,7 +3275,7 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
 
 static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     if (d->x <= 0 || d->y <= 0 || d->z <= 0) return;
-    const prog_t *pcs = ex->progs[NVN_STAGE_CS] ? ex->progs[NVN_STAGE_CS] : ex->prog;
+    const prog_t *pcs = stage_prog(ex, NVN_STAGE_CS);
     if (!pcs) return warn_once(W_PROGRAM, "a dispatch without a bound program is skipped");
     vk_contact_flush(ex);
     cb_res(ex);
@@ -3293,7 +3302,7 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
 // DispatchComputeIndirect: vkCmdDispatchIndirect from the pool buffer. The shader reads the group counts from c0 0x200,
 // so they are copied there on the GPU, into a c0 range no other dispatch uses, before the dispatch.
 static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
-    const prog_t *pcs = ex->progs[NVN_STAGE_CS] ? ex->progs[NVN_STAGE_CS] : ex->prog;
+    const prog_t *pcs = stage_prog(ex, NVN_STAGE_CS);
     if (!pcs) return warn_once(W_PROGRAM, "a dispatch without a bound program is skipped");
     VkMemSpan ip;
     if (!vk_mem_resolve(d->ind, sizeof(VkDispatchIndirectCommand), &ip) || ip.offset % 4)
@@ -3596,15 +3605,19 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
     switch (op) {
     case OP_BIND_PROGRAM: {
         const p_bind_program *b = payload;
-        ex->prog = b->prog, ex->prog_stages = b->stages;
-        if (b->stages) {
-            for (int s = 0; s < 6; s++) {
-                if (b->stages & (1 << s))
-                    ex->progs[s] = b->prog;
-            }
+        ex->prog_stages = b->stages;
+        uint32_t mask = (uint32_t)b->stages;
+        if (!mask || mask == NVN_SHADER_STAGE_BITS_LARGE) mask = 0x3f;
+        for (int i = 0; i < 6; i++)
+            if (mask & (1u << i)) ex->progs[i] = b->prog;
+        if (b->prog) {
+            ex->prog = b->prog;
+            ex->prog_unbound &= ~mask;
         } else {
-            for (int s = 0; s < 6; s++)
-                ex->progs[s] = b->prog;
+            ex->prog_unbound |= mask;
+            ex->prog = NULL;
+            for (int i = 0; i < 6; i++)
+                if (ex->progs[i] && !(ex->prog_unbound & (1u << i))) { ex->prog = ex->progs[i]; break; }
         }
         bind_gen++;
         break;
