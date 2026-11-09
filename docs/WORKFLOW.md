@@ -92,3 +92,7 @@ git push origin ryza --force-with-lease
    *做错复盘*: `nvnMemoryPoolFinalize` 对 CPU 具有强同步语义，异步推迟到 GPU 回放线程会导致 CPU 提前复用物理内存，造成严重的双重映射与内存踩踏。已彻底回退。
 10. **[Issue #10](https://github.com/snailium/totk-pc-recomp/issues/10)**（相关 PR 链接：[PR #960](https://github.com/valentderah/totk-pc-recomp/pull/960)）: `runtime/nvn, cfg: add no_queue_finish setting to skip synchronous queue finish stalls`  
     *做错复盘*: `nvnQueueFinish` 是保障 CPU/GPU 环形缓冲区同步的硬性屏障。粗暴跳过等待会造成严重的数据竞争与画面拉丝爆炸。正确解法是通过 UMA 硬件预设（`split_draws=0` 和 `frame_queue=1`）消除提交卡顿，绝不能跳过 API 同步。
+
+### 3.3 通用 Switch 重编译技术记录与正规修复（已合并至 `ryza` 分支）
+11. **[Issue #11](https://github.com/snailium/totk-pc-recomp/issues/11)**: `runtime/nvn_api_cmd: reclaim command buffer recording copies upon reuse to fix memory leak`  
+    *说明*: 记录了跨帧循环重用 `NVNcommandBuffer` 句柄导致主机内存暴涨的根本原因、Issue #8 做错复盘，以及最终通过挂钩对象生命周期重用事件（Commit `7f59e16`）安全回收旧副本的技术方案。实机验证 5000+ 次提交稳定在 1 个活跃副本（0.0 MiB），彻底根治内存泄漏。
