@@ -16,6 +16,7 @@
 #include "host.h"
 #include "kernel.h"
 #include "platform/platform.h"
+#include "target.h"
 
 #define R_OK 0u
 #define R_TIMEOUT KERN_R_TIMEOUT
@@ -352,7 +353,9 @@ static void ap_init(void);
 
 static int cores_enabled(void) {
     if (g_cores_on < 0) {
-        g_cores_on = !cfg_bool("TOTK_FREE_CORES");   // "0" keeps the gate, like unset
+        const char *e = cfg_get("TOTK_FREE_CORES");
+        int fc = e && *e ? cfg_bool("TOTK_FREE_CORES") : (rt_target() && rt_target()->free_cores);
+        g_cores_on = !fc;
         if (!g_cores_on)
             rt_log("kernel: WARNING: free_cores = 1 (TOTK_FREE_CORES) turns the virtual core gate off. This is an "
                    "experimental mode and the game crashes or hangs in it, usually at start. Set free_cores = 0 in "
@@ -1507,6 +1510,8 @@ static void thread_finish(RtThread *t) {
 static __attribute__((noreturn)) void exit_now(RtThread *t) { plat_jmp_go(&t->exit_jmp); }
 
 // The calling host thread, for ap_try (TOTK_ASYNC_PREEMPT) and dg_sample (TOTK_CORE_DIAG).
+static uint64_t guest_cpu_mask(void);
+
 static PlatIntr *ap_open_self(void) {
     if (!cores_enabled() || (!g_ap_int && g_diag <= 0)) return NULL;
     PlatIntr *h = plat_intr_self();
@@ -1516,6 +1521,7 @@ static PlatIntr *ap_open_self(void) {
 
 static void thread_main(void *p) {
     RtThread *t = p;
+    plat_thread_pin(guest_cpu_mask());
     tcur = t;
     t->tid = plat_thread_id();
     PlatIntr *self = ap_open_self();
@@ -1552,6 +1558,7 @@ uint32_t kern_main_thread(Cpu **cpu) {
         return tcur->handle;
     }
     if (g_main) rt_fatal("kern_main_thread: the main thread already runs on another host thread");
+    plat_thread_pin(guest_cpu_mask());
     const RtGuestLayout *L = mem_layout();
     uint64_t stack = L->stack.base + L->stack.size - g_main_stack_size;
     if (!plat_mem_commit(stack, g_main_stack_size))

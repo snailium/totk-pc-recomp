@@ -10,6 +10,7 @@
 #include "host.h"
 #include "vk.h"
 #include "platform/platform.h"
+#include "target.h"
 #include "vk_dlaa.h"
 
 static VkCtx g_vk;
@@ -395,8 +396,9 @@ static int create_device(void) {
     g_vk.has_astc_ldr = h->textureCompressionASTC_LDR;
     {
         const char *e = cfg_get("TOTK_FEEDBACK");
+        int fb_off = (e && !strcmp(e, "0")) || ((!e || !*e) && rt_target() && rt_target()->feedback_off);
         int layout_ok = has_fbl && has_lr && c->fbl.attachmentFeedbackLoopLayout && c->lr.dynamicRenderingLocalRead;
-        g_vk.feedback = e && !strcmp(e, "0") ? VK_FEEDBACK_OFF
+        g_vk.feedback = fb_off ? VK_FEEDBACK_OFF
                       : layout_ok && !(e && !strcmp(e, "restart")) ? VK_FEEDBACK_LAYOUT : VK_FEEDBACK_RESTART;
         rt_log("vk: feedback loops: %s (attachmentFeedbackLoopLayout %d, dynamicRenderingLocalRead %d)",
                g_vk.feedback == VK_FEEDBACK_LAYOUT ? "feedback layout + by-region barrier"
