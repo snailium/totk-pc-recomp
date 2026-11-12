@@ -311,7 +311,10 @@ static uint8_t *scratch(VkExec *ex, uint64_t size, VkBuffer *buf, VkDeviceSize *
 static int ub_bind(VkExec *ex, uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out);
 static void ub_written(VkExec *ex, uint64_t addr, uint64_t n);
 
+#include "target.h"
+
 static void note_written(VkExec *ex, uint64_t addr, uint64_t size) {
+    if (rt_target()->shadow_wb_off) return;
     CbRes *r = cb_res(ex);
     for (int i = 0; i < r->nwritten; i++)
         if (r->written[i].addr == addr && r->written[i].size == size) return;

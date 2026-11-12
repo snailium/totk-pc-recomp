@@ -914,6 +914,7 @@ static int shadow_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
     r->sgen = gen_now;   // the copy below holds every write stamped so far; later stamps are copied again
     plat_mutex_unlock(&gen_lock);
     memcpy(r->smap, (const void *)(uintptr_t)r->import_lo, n);
+    if (r->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) r->stouched = 1;
     plat_mutex_lock(&shadow_lock);
     s_live_n++, s_live_bytes += (int64_t)n;
     plat_mutex_unlock(&shadow_lock);
@@ -922,6 +923,10 @@ static int shadow_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
 }
 
 static void shadow_touch(PoolRec *r) {
+    if (r->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) {
+        r->stouched = 1;
+        return;
+    }
     plat_mutex_lock(&shadow_lock);
     if (!r->stouched) {
         if (nstouch == cstouch) grow((void **)&stouch, &cstouch, sizeof *stouch);
@@ -955,6 +960,7 @@ static void shadow_copy(PoolRec *r, uint64_t a, uint64_t b, int i) {
 
 // shadow_lock and gen_lock held: stamps the pool's written pages and copies those newer than its shadow.
 static void shadow_sync_pool(PoolRec *r) {
+    if (r->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) return;
     uint64_t lo = r->import_lo, hi = r->import_hi;
     uint32_t g = ++gen_now;
     int tracked = 1;
