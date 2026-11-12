@@ -223,6 +223,7 @@ static const RTTarget g_ryza2 = {
     .func_hook_n = (int)(sizeof g_ryza2_hooks / sizeof *g_ryza2_hooks),
     .split_draws_off = 1,
     .feedback_off = 1,
+    .shadow_wb_off = 1,
     .free_cores = 1,
     .frame_queue = 1,
     .replay_async_off = 1,
