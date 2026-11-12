@@ -49,12 +49,15 @@ typedef struct RTTarget {
     int init_count_n;
     // Present interval override: 0 = follow game (default), 1 = force 60 Hz interval, etc.
     int present_interval_override;
+    // Callback invoked on each presentation (e.g. to enforce dynamic frame state):
+    void (*on_present)(void);
     // Function hooks: replaces indirect dispatch table slots at boot time without instruction patching.
     const RTFuncHook *func_hooks;
     int func_hook_n;
     // Target engine defaults:
     int split_draws_off;
     int feedback_off;
+    int shadow_wb_off;
     int free_cores;
     int frame_queue;
     int replay_async_off;
