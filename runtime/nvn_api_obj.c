@@ -783,5 +783,7 @@ NVN_API(nvnQueuePresentTexture) {
     }
     o->avail[idx] = fq ? slot : slot + period;
     frame_step_present(slot, o->interval);   // frame_rate.c: the real-time step follows the display times
+    const RTTarget *tgt = rt_target();
+    if (tgt && tgt->on_present) tgt->on_present();
     rt_frame_presented(t, o->presents);
 }

@@ -11,6 +11,7 @@
 #include "target.h"
 
 #include "host.h"
+#include "platform/platform.h"
 
 void rt_boot_module_inits(Cpu *c);        // boot.c
 void rt_boot_entry_callbacks(uint64_t out[3]);
@@ -42,6 +43,134 @@ static void establish_heap(void) {
     rt_fatal("boot: no heap size the kernel accepts");
 }
 
+static void ryza2_hook_exnowloading_thread(Cpu *c);
+static GuestFn g_orig_exnowloading_thread;
+static uint64_t g_exnowloading_ptr;
+static void ryza2_hook_app_main_loop(Cpu *c);
+static GuestFn g_orig_app_main_loop;
+static void ryza2_hook_ktgl_set_present_interval(Cpu *c);
+static GuestFn g_orig_ktgl_set_present_interval;
+
+// Unlock 60 FPS across all of Ryza 2's internal frame-rate judgment points:
+//   1. App present interval controller (f_70009cfea0 at 0x70009d00ec & f_7000aef860 at 0x7000aef8dc):
+//      In shipping code, App (at [0x7001a7a658], GOT [0x70019a2e00]) initializes app+0x1d1 = 1 (dynamic 30/60 mode)
+//      and app+0x1d4 = -1 (fixed interval override). Every frame a 3D scene or title menu is drawn, f_7000aef860
+//      sets *(uint8_t *)(app + 0x1d0) = 1, which makes f_70009cfea0 set KTGL present interval (ktgl_dev + 0x2a9c)
+//      to 2 (30 FPS). Setting app+0x1d1 = 0 and app+0x1d4 = 1 makes f_70009cfea0 ignore app+0x1d0 and lock the
+//      present interval to 1 (60 FPS).
+//   2. Dynamic resolution / frame-time threshold mode (0x700198f254 via GOT [0x70019a6578]):
+//      Shipping .data initializes this to 3 (forced 30 FPS mode in f_7000a84540/f_7000a847a0/f_7000a84820/f_7000a84fc0).
+//      Setting it to 0 switches the frame-time controller to 60 FPS mode.
+//   3. Background loading / save-screen thread loop (EXNowLoading, f_70009ce970 at 0x70009ce970):
+//      Waits for 2.0 VSyncs (30 FPS) and calls SleepThread(20 ms) every iteration (~38 FPS cap), while main-thread
+//      wait loops (0x70009cec40, 0x70009ced58, 0x70009cee64) poll at 1 ms. Handled by hooking f_70009ce970 and
+//      observing _ZN2nn2os11SleepThreadENS_8TimeSpanE.
+//   4. KTGL Graphics Device Present Interval (ktgl_dev + 0x2a9c):
+//      Directly sets and holds ktgl_dev+0x2a9c = 1 so all swapchain presents, sync waits, and pacing loops target 60 Hz.
+static void ryza2_apply_60fps_state(void) {
+    uint64_t mode_ptr = LD64(0x70019a6578ull);
+    if (mode_ptr > 0x10000 && LD32(mode_ptr) == 3u) {
+        ST32(mode_ptr, 0u);
+        rt_log("ryza2: dynamic resolution mode 3 -> 0 (60 FPS)");
+    }
+    uint64_t app_slot = LD64(0x70019a2e00ull);
+    if (app_slot > 0x10000) {
+        uint64_t app = LD64(app_slot);
+        if (app > 0x10000) {
+            static bool app_logged = false;
+            if (!app_logged) {
+                rt_log("ryza2: app=%#llx, locking interval override app+0x1d0=0, app+0x1d1=0, app+0x1d4=1",
+                       (unsigned long long)app);
+                app_logged = true;
+            }
+            ST8(app + 0x1d0ull, 0u);
+            ST8(app + 0x1d1ull, 0u);
+            ST32(app + 0x1d4ull, 1u);
+        }
+    }
+    uint64_t ktgl_slot = LD64(0x70019a0940ull);
+    if (ktgl_slot > 0x10000) {
+        uint64_t ktgl_dev = LD64(ktgl_slot);
+        if (ktgl_dev > 0x10000) {
+            static bool ktgl_logged = false;
+            if (!ktgl_logged) {
+                rt_log("ryza2: ktgl_dev=%#llx, locking ktgl+0x2a9c=1, ktgl+0x2a29=0", (unsigned long long)ktgl_dev);
+                ktgl_logged = true;
+            }
+            ST32(ktgl_dev + 0x2a9cull, 1u);
+            ST8(ktgl_dev + 0x2a29ull, 0u);
+        }
+    }
+}
+
+static void ryza2_hook_exnowloading_thread(Cpu *c) {
+    g_exnowloading_ptr = c->x[0];
+    ryza2_apply_60fps_state();
+    if (g_orig_exnowloading_thread) g_orig_exnowloading_thread(c);
+}
+
+static void ryza2_hook_app_main_loop(Cpu *c) {
+    ryza2_apply_60fps_state();
+    if (g_orig_app_main_loop) g_orig_app_main_loop(c);
+    ryza2_apply_60fps_state();
+}
+
+static void ryza2_hook_ktgl_set_present_interval(Cpu *c) {
+    ryza2_apply_60fps_state();
+    c->x[1] = 1;
+    if (g_orig_ktgl_set_present_interval) g_orig_ktgl_set_present_interval(c);
+}
+
+static void obs_ryza2_yield_thread(Cpu *c) {
+    ryza2_apply_60fps_state();
+    rt_original(c);
+}
+HOST_OBSERVER("_ZN2nn2os11YieldThreadEv", obs_ryza2_yield_thread);
+
+static void obs_ryza2_sleep_thread(Cpu *c) {
+    ryza2_apply_60fps_state();
+    uint64_t lr = c->x[30];
+    if (lr == 0x70009cebc0ull) {
+        // EXNowLoading thread loop (f_70009ce970):
+        // Note: in lifted C, `x19` is cached in a local C variable in `f_70009ce970` and `c->x[19]` is clobbered
+        // by callees inside the loop, so we use `g_exnowloading_ptr` captured on entry to `f_70009ce970`.
+        // Pre-seed accumulated VSync counter *(float *)(ex + 0x14) = 1.0f so a single 60 Hz tick reaches the
+        // 2.0f threshold, and shorten the 20 ms end-of-iteration sleep (x0 = 20,000,000 ns) to 8 ms so the
+        // background spinner runs at 60 FPS without starving the main thread of mutex `ex + 8`.
+        uint64_t ex = g_exnowloading_ptr;
+        if (ex > 0x10000 && LD8(ex + 0x10ull) != 0u && LD8(ex + 0x12ull) == 0u && LD32(ex + 0x14ull) == 0u) {
+            ST32(ex + 0x14ull, 0x3f800000u);   // 1.0f
+        }
+        if (c->x[0] == 20000000ull) {
+            c->x[0] = 8000000ull;              // 8 ms
+        }
+    } else if (lr == 0x70009cee64ull) {
+        // EXNowLoading::waitFirstDraw (f_70009cedc0): main thread waits for the loading thread to enter its draw
+        // body (`*(ex + 0x11) != 0`). With the loading thread drawing at 60 Hz (~2 ms draw window per 16.6 ms),
+        // polling at 1 ms can miss the window for many frames; poll at 100 us instead so the main thread catches
+        // the draw window immediately.
+        if (c->x[0] == 1000000ull) {
+            c->x[0] = 100000ull;               // 100 us
+        }
+    } else if (lr == 0x7000aa5850ull) {
+        // Animation/physics worker wait loop (f_7000aa5700): main thread polls worker slots in user space.
+        plat_pause();
+        return;
+    } else if (c->x[0] == 1ull) {
+        // f_70009e2ef0 tail-calls SleepThread(1 ns) after every worker ConditionVariable::Signal.
+        // Skip the redundant 1 ns sleep after waking a worker thread.
+        return;
+    }
+    rt_original(c);
+}
+HOST_OBSERVER("_ZN2nn2os11SleepThreadENS_8TimeSpanE", obs_ryza2_sleep_thread);
+
+static const RTFuncHook g_ryza2_hooks[] = {
+    {"main", 0x9ce970ull, ryza2_hook_exnowloading_thread, &g_orig_exnowloading_thread},
+    {"main", 0x9d0ef0ull, ryza2_hook_app_main_loop, &g_orig_app_main_loop},
+    {"main", 0x722460ull, ryza2_hook_ktgl_set_present_interval, &g_orig_ktgl_set_present_interval},
+};
+
 static void ryza2_guest_main(Cpu *c) {
     uint32_t handle = kern_main_thread(&c);
     establish_heap();
@@ -63,6 +192,7 @@ static void ryza2_guest_main(Cpu *c) {
         rt_log("boot: nninitStartup returned; running the module constructors and nnMain");
     }
     rt_boot_module_inits(c);
+    ryza2_apply_60fps_state();
     uint64_t nnmain = ldr_symbol("nnMain");
     if (!nnmain) rt_fatal("boot: the entry returned and nnMain is not exported");
     rt_log("boot: ENTER nnMain at %s", ldr_describe(nnmain, d, sizeof d));
@@ -88,6 +218,9 @@ static const RTTarget g_ryza2 = {
     .init_counts = g_ryza2_inits,
     .init_count_n = 3,
     .present_interval_override = 1,
+    .on_present = ryza2_apply_60fps_state,
+    .func_hooks = g_ryza2_hooks,
+    .func_hook_n = (int)(sizeof g_ryza2_hooks / sizeof *g_ryza2_hooks),
     .split_draws_off = 1,
     .feedback_off = 1,
     .free_cores = 1,
