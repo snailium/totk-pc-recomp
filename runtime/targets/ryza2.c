@@ -12,6 +12,7 @@
 
 #include "host.h"
 #include "platform/platform.h"
+#include "ryza2_offsets.h"
 
 void rt_boot_module_inits(Cpu *c);        // boot.c
 void rt_boot_entry_callbacks(uint64_t out[3]);
@@ -50,6 +51,7 @@ static void ryza2_hook_app_main_loop(Cpu *c);
 static GuestFn g_orig_app_main_loop;
 static void ryza2_hook_ktgl_set_present_interval(Cpu *c);
 static GuestFn g_orig_ktgl_set_present_interval;
+static uint64_t g_ktgl_dev;
 
 // Unlock 60 FPS across all of Ryza 2's internal frame-rate judgment points:
 //   1. App present interval controller (f_70009cfea0 at 0x70009d00ec & f_7000aef860 at 0x7000aef8dc):
@@ -68,12 +70,13 @@ static GuestFn g_orig_ktgl_set_present_interval;
 //   4. KTGL Graphics Device Present Interval (ktgl_dev + 0x2a9c):
 //      Directly sets and holds ktgl_dev+0x2a9c = 1 so all swapchain presents, sync waits, and pacing loops target 60 Hz.
 static void ryza2_apply_60fps_state(void) {
-    uint64_t mode_ptr = LD64(0x70019a6578ull);
+    const uint64_t main_base = 0x7000000000ull;
+    uint64_t mode_ptr = LD64(main_base + RYZA2_OFF_DYN_RES_MODE_GOT);
     if (mode_ptr > 0x10000 && LD32(mode_ptr) == 3u) {
         ST32(mode_ptr, 0u);
         rt_log("ryza2: dynamic resolution mode 3 -> 0 (60 FPS)");
     }
-    uint64_t app_slot = LD64(0x70019a2e00ull);
+    uint64_t app_slot = LD64(main_base + RYZA2_OFF_APP_GOT);
     if (app_slot > 0x10000) {
         uint64_t app = LD64(app_slot);
         if (app > 0x10000) {
@@ -88,18 +91,15 @@ static void ryza2_apply_60fps_state(void) {
             ST32(app + 0x1d4ull, 1u);
         }
     }
-    uint64_t ktgl_slot = LD64(0x70019a0940ull);
-    if (ktgl_slot > 0x10000) {
-        uint64_t ktgl_dev = LD64(ktgl_slot);
-        if (ktgl_dev > 0x10000) {
-            static bool ktgl_logged = false;
-            if (!ktgl_logged) {
-                rt_log("ryza2: ktgl_dev=%#llx, locking ktgl+0x2a9c=1, ktgl+0x2a29=0", (unsigned long long)ktgl_dev);
-                ktgl_logged = true;
-            }
-            ST32(ktgl_dev + 0x2a9cull, 1u);
-            ST8(ktgl_dev + 0x2a29ull, 0u);
+    uint64_t ktgl_dev = g_ktgl_dev;
+    if (ktgl_dev > 0x10000) {
+        static bool ktgl_logged = false;
+        if (!ktgl_logged) {
+            rt_log("ryza2: ktgl_dev=%#llx, locking ktgl+0x2a9c=1, ktgl+0x2a29=0", (unsigned long long)ktgl_dev);
+            ktgl_logged = true;
         }
+        ST32(ktgl_dev + 0x2a9cull, 1u);
+        ST8(ktgl_dev + 0x2a29ull, 0u);
     }
 }
 
@@ -116,6 +116,7 @@ static void ryza2_hook_app_main_loop(Cpu *c) {
 }
 
 static void ryza2_hook_ktgl_set_present_interval(Cpu *c) {
+    g_ktgl_dev = c->x[0];
     ryza2_apply_60fps_state();
     c->x[1] = 1;
     if (g_orig_ktgl_set_present_interval) g_orig_ktgl_set_present_interval(c);
@@ -129,8 +130,9 @@ HOST_OBSERVER("_ZN2nn2os11YieldThreadEv", obs_ryza2_yield_thread);
 
 static void obs_ryza2_sleep_thread(Cpu *c) {
     ryza2_apply_60fps_state();
+    const uint64_t main_base = 0x7000000000ull;
     uint64_t lr = c->x[30];
-    if (lr == 0x70009cebc0ull) {
+    if (lr == main_base + RYZA2_OFF_EXNOWLOADING_SLEEP_LR) {
         // EXNowLoading thread loop (f_70009ce970):
         // Note: in lifted C, `x19` is cached in a local C variable in `f_70009ce970` and `c->x[19]` is clobbered
         // by callees inside the loop, so we use `g_exnowloading_ptr` captured on entry to `f_70009ce970`.
@@ -144,7 +146,7 @@ static void obs_ryza2_sleep_thread(Cpu *c) {
         if (c->x[0] == 20000000ull) {
             c->x[0] = 8000000ull;              // 8 ms
         }
-    } else if (lr == 0x70009cee64ull) {
+    } else if (lr == main_base + RYZA2_OFF_EXNOWLOADING_WAIT_LR) {
         // EXNowLoading::waitFirstDraw (f_70009cedc0): main thread waits for the loading thread to enter its draw
         // body (`*(ex + 0x11) != 0`). With the loading thread drawing at 60 Hz (~2 ms draw window per 16.6 ms),
         // polling at 1 ms can miss the window for many frames; poll at 100 us instead so the main thread catches
@@ -152,7 +154,7 @@ static void obs_ryza2_sleep_thread(Cpu *c) {
         if (c->x[0] == 1000000ull) {
             c->x[0] = 100000ull;               // 100 us
         }
-    } else if (lr == 0x7000aa5850ull) {
+    } else if (lr == main_base + RYZA2_OFF_ANIM_WORKER_SLEEP_LR) {
         // Animation/physics worker wait loop (f_7000aa5700): main thread polls worker slots in user space.
         plat_pause();
         return;
@@ -166,9 +168,9 @@ static void obs_ryza2_sleep_thread(Cpu *c) {
 HOST_OBSERVER("_ZN2nn2os11SleepThreadENS_8TimeSpanE", obs_ryza2_sleep_thread);
 
 static const RTFuncHook g_ryza2_hooks[] = {
-    {"main", 0x9ce970ull, ryza2_hook_exnowloading_thread, &g_orig_exnowloading_thread},
-    {"main", 0x9d0ef0ull, ryza2_hook_app_main_loop, &g_orig_app_main_loop},
-    {"main", 0x722460ull, ryza2_hook_ktgl_set_present_interval, &g_orig_ktgl_set_present_interval},
+    {"main", RYZA2_OFF_EXNOWLOADING, ryza2_hook_exnowloading_thread, &g_orig_exnowloading_thread},
+    {"main", RYZA2_OFF_APP_MAIN_LOOP, ryza2_hook_app_main_loop, &g_orig_app_main_loop},
+    {"main", RYZA2_OFF_KTGL_SET_PRESENT, ryza2_hook_ktgl_set_present_interval, &g_orig_ktgl_set_present_interval},
 };
 
 static void ryza2_guest_main(Cpu *c) {

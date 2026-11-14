@@ -1,0 +1,8 @@
+# Atelier Ryza 2 generic 60 FPS / performance patches (AOB pattern-based, version-independent)
+
+set ryza2_perf TOTK_RYZA2_PERF 1
+
+# f_7000aa5700: animation/task worker wait loop
+# Replace `cbz w8, done` with `cmp w8, #2; b.lt done` so the main thread does not
+# call LockMutex while the worker is still running (state == 1).
+pattern ryza2_perf main e80100341f0900712c010054881340f900410091 7100091f 540001cb
