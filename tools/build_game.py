@@ -864,6 +864,10 @@ def main():
                  '--romfs DIR, or --no-romfs to build without it')
     global TARGET
     TARGET = args.target
+    if TARGET == 'ryza2' and (paths['exefs'] / 'main').is_file():
+        import gen_ryza2_offsets
+        out.mkdir(parents=True, exist_ok=True)
+        gen_ryza2_offsets.generate(paths['exefs'] / 'main', out / 'ryza2_offsets.h')
     expected = args.expected
     if not expected:
         if args.version not in DISPLAY_VERSIONS:
