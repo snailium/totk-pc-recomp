@@ -1,6 +1,10 @@
 // totk.exe entry: reserves the guest address space, parses the command line and runs one mode.
 //
 //   totk.exe [--exefs DIR] [--romfs DIR] [--profile DIR] <mode>
+//     --save-export DIR  the committed save of <profile> into DIR, with a manifest; needs no game files
+//     --save-import DIR  the save inside DIR into <profile>: this port's export, a console or JKSV dump, a Ryujinx
+//                       or yuzu save directory - found by shape, current save backed up first; --save-dry-run lists
+//                       what would be taken; needs no game files
 //     --selftest        layout, dispatch table and host-function registry; needs no game files
 //     --probe-mods      the mods folder scan, order and switches (mods.c), the size table entries of the members of
 //                       mods' packs (restbl_probe.c); needs no game files
@@ -32,6 +36,7 @@
 #include "host.h"
 #include "layout.h"
 #include "platform/platform.h"
+#include "save_io.h"
 #include "sha256.h"
 
 #define MAX_MODULES 16
@@ -613,7 +618,8 @@ static int probe_crash(int null) {
 }
 
 static int usage(const char *argv0) {
-    fprintf(stderr, "usage: %s [--exefs DIR] [--romfs DIR] [--profile DIR] [--selftest | --probe-loader | "
+    fprintf(stderr, "usage: %s [--exefs DIR] [--romfs DIR] [--profile DIR] [--save-export DIR | --save-import DIR "
+                    "[--save-dry-run] | --selftest | --probe-loader | "
                     "--probe-cfg | --probe-dpi | --probe-mods | --probe-playtime | --probe-kernel | --probe-ipc | --probe-services | --probe-fs | --probe-gfx-abi | "
                     "--probe-nvn | --probe-nvn-tex | --probe-window | --probe-shader | --probe-vkmem | "
                     "--probe-vkexec | --probe-astc | --probe-movie | --probe-crash-call | --probe-crash-null | --probe-discord | "
@@ -655,6 +661,9 @@ static void portable_paths(RtConfig *c) {
     // The DLC folder is optional: a missing folder keeps c->aoc NULL, which the fs layer reads as "no add-on content".
     c->aoc = portable_path(exe, "TOTK_AOC_DIR", "dlc", NULL, pp_aoc, sizeof pp_aoc, c->aoc);
 }
+
+static const char *save_dir_arg;   // --save-export/--save-import: the folder the mode works on
+static int save_dry_run;           // --save-import: print the candidates and the chosen one, write nothing
 
 int main(int argc, char **argv) {
     mem_init();   // first: claim the guest address space before anything else can land there; reads totk.ini
@@ -714,6 +723,12 @@ int main(int argc, char **argv) {
             if (++i == argc) return usage(argv[0]);
             mode = argv[i - 1];
             cfg.plugin_init = argv[i];
+        } else if (!strcmp(argv[i], "--save-export") || !strcmp(argv[i], "--save-import")) {
+            if (++i == argc) return usage(argv[0]);
+            if (mode) return usage(argv[0]);
+            mode = argv[i - 1], save_dir_arg = argv[i];
+        } else if (!strcmp(argv[i], "--save-dry-run")) {
+            save_dry_run = 1;
         } else if (!mode && !strncmp(argv[i], "--", 2)) {
             mode = argv[i];
         } else {
@@ -730,6 +745,8 @@ int main(int argc, char **argv) {
         rt_boot();
         return 0;
     }
+    if (!strcmp(mode, "--save-export")) return save_export(save_dir_arg);
+    if (!strcmp(mode, "--save-import")) return save_import(save_dir_arg, save_dry_run);
     if (!strcmp(mode, "--selftest")) return selftest();
     if (!strcmp(mode, "--probe-loader")) return probe_loader();
     if (!strcmp(mode, "--probe-crash-call")) return probe_crash(0);
