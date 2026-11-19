@@ -624,7 +624,8 @@ static int usage(const char *argv0) {
 // Paths for a copied folder (tools/package_build.py). Per path: TOTK_EXEFS, TOTK_ROMFS, TOTK_PROFILE_DIR, else the
 // folder next to totk.exe (exefs with main.npdm, romfs with romfs.bin, any profile folder) if it is there, else the
 // path baked in at build time. A relative value is relative to totk.exe's folder.
-static char pp_exefs[PLAT_PATH_MAX * 2], pp_romfs[PLAT_PATH_MAX * 2], pp_profile[PLAT_PATH_MAX * 2];
+static char pp_exefs[PLAT_PATH_MAX * 2], pp_romfs[PLAT_PATH_MAX * 2], pp_profile[PLAT_PATH_MAX * 2],
+            pp_aoc[PLAT_PATH_MAX * 2];
 
 static const char *portable_path(const char *dir, const char *var, const char *sub, const char *must, char *out, size_t cap,
                                  const char *fallback) {
@@ -651,6 +652,8 @@ static void portable_paths(RtConfig *c) {
     c->exefs = portable_path(exe, "TOTK_EXEFS", "exefs", "main.npdm", pp_exefs, sizeof pp_exefs, c->exefs);
     c->romfs = portable_path(exe, "TOTK_ROMFS", "romfs", "romfs.bin", pp_romfs, sizeof pp_romfs, c->romfs);
     c->profile = portable_path(exe, "TOTK_PROFILE_DIR", "profile", NULL, pp_profile, sizeof pp_profile, c->profile);
+    // The DLC folder is optional: a missing folder keeps c->aoc NULL, which the fs layer reads as "no add-on content".
+    c->aoc = portable_path(exe, "TOTK_AOC_DIR", "dlc", NULL, pp_aoc, sizeof pp_aoc, c->aoc);
 }
 
 int main(int argc, char **argv) {

@@ -282,6 +282,8 @@ void ipc_handle_closed(int kind, void *obj);               // CloseHandle on a K
 
 // ---- file system (romfs.c / fs_host.c)
 void fs_init(void);                                        // idempotent; paths from rt_config()
+int fs_aoc_count(void);                                    // extracted add-on-content packs under rt_config()->aoc, 0
+                                                           // when the folder is absent (so no DLC behaves as before)
 
 // ---- account (ov_system.c)
 void account_uid(uint64_t out[2]);                         // the local user's nn::account::Uid {lo, hi}, persistent in
@@ -356,7 +358,9 @@ int vk_is_uma(void);
 void frame_step_present(uint64_t display_ns, int interval); // nvnQueuePresentTexture: the frame's display time and
                                                            // present interval (60 Hz ticks)
 // ---- boot (boot.c, main.c)
-typedef struct { const char *exefs, *romfs, *profile; int boot; double seconds; const char *shot, *gpu; } RtConfig;
+// aoc: the add-on-content root (TOTK_AOC_DIR, else the "dlc" folder next to totk.exe): one numbered directory per
+// extracted DLC pack, served through the mounts nn::fs::MountAddOnContent creates (fs_host.c).
+typedef struct { const char *exefs, *romfs, *profile, *aoc; int boot; double seconds; const char *shot, *gpu; } RtConfig;
                                                            // romfs: directory with romfs.bin and index.json;
                                                            // frames: --frames N (0 = no limit); shot: --shot
                                                            // PATH; gpu: TOTK_GPU

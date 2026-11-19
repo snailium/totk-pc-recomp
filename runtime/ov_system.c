@@ -454,13 +454,21 @@ static void ov_show_error(Cpu *c) {
 
 // ==== SDK-internal initialisation (services.c)
 static void ov_diag_startup(Cpu *c) { (void)c; rt_log("diag: host diagnostics"); }
-static void ov_aoc_initialize(Cpu *c) { (void)c; rt_log("aoc: no add-on content"); }
-// 1.4.3's main lists add-on content (MNG services.c host_aoc_list): there is none.
-// int ListAddOnContent(AddOnContentIndex *out, int offset, int count)
+static void ov_aoc_initialize(Cpu *c) { (void)c; rt_log("aoc: the add-on-content manager stays local"); }
+// int nn::aoc::ListAddOnContent(AddOnContentIndex *out, int offset, int count): the indices the title then passes to
+// nn::fs::MountAddOnContent. The port numbers its packs 1..N (the aoc root's numbered directories), so the list is
+// that range; the return value is how many were written (the title skips add-on content entirely when it is 0).
 static void ov_aoc_list(Cpu *c) {
+    int *out = arg_p(c, 0);
     int offset = (int)arg_x(c, 1), count = (int)arg_x(c, 2);
     if (offset < 0 || count < 0) rt_fatal("aoc: ListAddOnContent range %d+%d", offset, count);
-    ret_x(c, 0);
+    if (!out || count == 0) {
+        ret_x(c, 0);
+        return;
+    }
+    int n = fs_aoc_count(), w = 0;
+    for (int i = offset + 1; i <= n && w < count; i++) out[w++] = i;
+    ret_x(c, w);
 }
 static void ov_err_context(Cpu *c) { (void)c; rt_log("err: error contexts stay local"); }
 static void ov_pctl_initialize(Cpu *c) { (void)c; rt_log("pctl: no parental controls"); }
@@ -959,8 +967,9 @@ static void ov_friends_initialize(Cpu *c) {
 HOST_OVERRIDE("_ZN2nn7friends6detail17ShimLibraryGlobal10InitializeEv", ov_friends_initialize);
 
 // int nn::aoc::CountAddOnContent(): the SDK asks before any service session exists, and the lifted function dereferences
-// its uninitialised service object; the port has no add-on content, so the answer is zero.
-static void ov_aoc_count(Cpu *c) { ret_x(c, 0); }
+// its uninitialised service object. The answer is the extracted packs under the aoc root (fs_host.c): 0 when the folder
+// is absent, which is what a build without DLC has always answered.
+static void ov_aoc_count(Cpu *c) { ret_x(c, fs_aoc_count()); }
 HOST_OVERRIDE("_ZN2nn3aoc17CountAddOnContentEv", ov_aoc_count);
 HOST_OVERRIDE("_ZN2nn2oe16GetOperationModeEv", ov_operation_mode);
 HOST_OVERRIDE("_ZN2nn2oe18GetPerformanceModeEv", ov_performance_mode);
