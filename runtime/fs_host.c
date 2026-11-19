@@ -34,7 +34,8 @@
 #define NMOUNTS 16
 #define PATH_CAP 1100
 
-enum { M_FREE, M_SAVE, M_TEMP, M_CACHE, M_SAVE_RO };   // M_SAVE: the working copy; M_SAVE_RO: the committed save
+enum { M_FREE, M_SAVE, M_TEMP, M_CACHE, M_SAVE_RO, M_AOC };   // M_SAVE: the working copy; M_SAVE_RO: the committed save
+                                                              // M_AOC: an extracted add-on-content pack (read-only data)
 
 typedef struct { int kind; char name[32]; char root[1024]; } Mount;
 typedef struct { PlatFile *h; int mode, save; } File;   // h NULL = free; save: on a save-data mount
@@ -678,6 +679,43 @@ void fs_host_set_profile(const char *dir) {
     need(dir && snprintf(profile, sizeof profile, "%s", dir) < (int)sizeof profile, "profile path");
 }
 
+// ---- add-on content (nn::aoc / nn::fs::MountAddOnContent)
+// Each extracted DLC pack is a numbered directory under the aoc root (rt_config()->aoc): 01, 02, ... in the order the
+// extraction sorted them, with the pack's files inside at the same paths the base RomFS uses (Data/NX/..., and a
+// marker file like ITE00 or BGM01 at the root). The scan runs once, like the save root's: an absent root answers
+// "no add-on content", which is what a build without the folder has always done.
+static char aoc_root[1100];
+static int aoc_n = -1;   // -1 = not scanned yet
+
+static void aoc_scan(void *param) {
+    (void)param;
+    aoc_n = 0;
+    const char *dir = rt_config()->aoc;
+    if (!dir || !*dir) return;
+    snprintf(aoc_root, sizeof aoc_root, "%s", dir);
+    for (int i = 1; i <= 99; i++) {
+        char p[PATH_CAP];
+        snprintf(p, sizeof p, "%s/%02d", aoc_root, i);
+        if (plat_fs_kind(p) == PLAT_FS_DIR) aoc_n++;
+    }
+    if (aoc_n) rt_log("aoc: %d pack(s) under %s", aoc_n, aoc_root);
+}
+
+int fs_aoc_count(void) {
+    static PlatOnce once = PLAT_ONCE_INIT;
+    if (aoc_n < 0) plat_once(&once, aoc_scan, NULL);
+    return aoc_n;
+}
+
+// The directory of pack <index> (1-based, the same index nn::aoc::ListAddOnContent handed the title), NULL when the
+// extraction did not provide it. fs_aoc_count() must have run: aoc_root is set there.
+static const char *aoc_dir(int index) {
+    static char p[PATH_CAP];
+    if (index < 1 || index > 99) return NULL;
+    snprintf(p, sizeof p, "%s/%02d", aoc_root, index);
+    return plat_fs_kind(p) == PLAT_FS_DIR ? p : NULL;
+}
+
 // ---- mounts and paths
 static uint32_t mount_add(const char *name, int kind, const char *root) {
     if (!name || !*name || strlen(name) >= 32 || strchr(name, ':') || strchr(name, '/')) return FS_R_INVALID_ARGUMENT;
@@ -1268,6 +1306,44 @@ static void ov_save_exists(Cpu *c) {
 static void ov_ensure_save(Cpu *c) { (void)c; ret_x(c, 0); }
 static void ov_mount_temp(Cpu *c) { ret_x(c, mount_temp(arg_p(c, 0))); }
 static void ov_unmount(Cpu *c) { unmount(arg_p(c, 0)); }
+
+// nn::Result nn::fs::MountAddOnContent(const char *name, int index, void *cache, size_t cache_size): the title mounts
+// every pack nn::aoc::ListAddOnContent reported, under the name it formatted itself ("aoc%d" of the index), and reads
+// the pack's files through that name. The port serves the extracted tree of pack <index> from the aoc root; the cache
+// the title allocated after QueryMountAddOnContentCacheSize is unused (that query answers 0), because a host directory
+// needs none.
+static void ov_mount_aoc(Cpu *c) {
+    const char *name = (const char *)(uintptr_t)arg_x(c, 0);
+    int index = (int)arg_x(c, 1);
+    if (!name || !*name) {
+        ret_x(c, FS_R_INVALID_ARGUMENT);
+        return;
+    }
+    if (fs_aoc_count() < 1) {
+        ret_x(c, FS_R_TARGET_NOT_FOUND);   // the title checks CountAddOnContent first; reaching here is unexpected
+        return;
+    }
+    const char *dir = aoc_dir(index);
+    if (!dir) {
+        ret_x(c, FS_R_TARGET_NOT_FOUND);
+        return;
+    }
+    ret_x(c, mount_add(name, M_AOC, dir));
+}
+
+// nn::Result nn::fs::QueryMountAddOnContentCacheSize(size_t *out, int index): the cache the mount would need. The
+// port's mount serves a host directory and needs none - but the answer must not be 0: the title allocates exactly this
+// much and keeps its per-pack bookkeeping (locks at +0xb8) inside the allocation, so 0 made its allocator hand out an
+// unmapped arena base and the first LockMutex faulted. 64 KiB is a safe superset of what the title touches there.
+static void ov_query_aoc_cache(Cpu *c) {
+    size_t *out = arg_p(c, 0);
+    if (!out) {
+        ret_x(c, FS_R_INVALID_ARGUMENT);
+        return;
+    }
+    *out = 0x10000;
+    ret_x(c, 0);
+}
 static void ov_commit(Cpu *c) { ret_x(c, commit(arg_p(c, 0))); }
 static void ov_create_cache(Cpu *c) { ret_x(c, create_cache(I32(0), I64(1), I64(2))); }
 static void ov_delete_cache(Cpu *c) { ret_x(c, delete_cache(I32(0))); }
@@ -1303,6 +1379,8 @@ static void ov_set_priority(Cpu *c) { (void)c; }
 #define S_SAVE_EXISTS "_ZN2nn2fs18IsSaveDataExistingENS_13ApplicationIdERKNS_7account3UidE"
 #define S_ENSURE_SAVE "_ZN2nn2fs14EnsureSaveDataERKNS_7account3UidE"
 #define S_MOUNT_TEMP "_ZN2nn2fs21MountTemporaryStorageEPKc"
+#define S_MOUNT_AOC "_ZN2nn2fs17MountAddOnContentEPKciPvm"
+#define S_QUERY_AOC_CACHE "_ZN2nn2fs31QueryMountAddOnContentCacheSizeEPmi"
 #define S_UNMOUNT "_ZN2nn2fs7UnmountEPKc"
 #define S_COMMIT "_ZN2nn2fs6CommitEPKc"
 #define S_COMMIT_SAVE "_ZN2nn2fs14CommitSaveDataEPKc"
@@ -1353,6 +1431,8 @@ HOST_OVERRIDE("_ZN2nn2fs18IsSaveDataExistingERKNS_7account3UidE", ov_save_exists
 HOST_OVERRIDE(S_SAVE_EXISTS, ov_save_exists);
 HOST_OVERRIDE(S_ENSURE_SAVE, ov_ensure_save);
 HOST_OVERRIDE(S_MOUNT_TEMP, ov_mount_temp);
+HOST_OVERRIDE(S_MOUNT_AOC, ov_mount_aoc);
+HOST_OVERRIDE(S_QUERY_AOC_CACHE, ov_query_aoc_cache);
 HOST_OVERRIDE(S_UNMOUNT, ov_unmount);
 HOST_OVERRIDE(S_COMMIT, ov_commit);
 HOST_OVERRIDE(S_COMMIT_SAVE, ov_commit);
