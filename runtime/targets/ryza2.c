@@ -226,7 +226,8 @@ static const RTTarget g_ryza2 = {
     .split_draws_off = 1,
     .feedback_off = 1,
     .shadow_wb_off = 1,
-    .free_cores = 1,
+    .free_cores = 1,   // measured for this title on the BC-250 (UMA): Ryza 2's worker pool needs the core gate lifted.
+                       // The TotK warning ("THE GAME CRASHES WITH 1", totk.ini.example) does not apply to this target.
     .frame_queue = 1,
     .replay_async_off = 1,
     .vk_present = "mailbox",
