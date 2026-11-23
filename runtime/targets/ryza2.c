@@ -230,6 +230,9 @@ static const RTTarget g_ryza2 = {
                        // The TotK warning ("THE GAME CRASHES WITH 1", totk.ini.example) does not apply to this target.
     .frame_queue = 1,
     .replay_async_off = 1,
+    // Gust's engine is not what the scene passes (DLSS, FSR 3.1, frame generation) were measured on: they would
+    // neither find the scene nor the camera and object uniforms, so they answer "not available on this title".
+    .scene_passes_off = 1,
     .vk_present = "mailbox",
 };
 

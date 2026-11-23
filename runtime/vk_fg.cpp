@@ -21,6 +21,7 @@
 //    picture with the HUD, into an RGBA8 image holding bytes as the window texture does (sRGB transfer function).
 // The present (vk_backend.c present_pair) shows it before the frame, through vk_fg_present_gen (TOTK_FG_TEST shows it, or
 // the picture before the HUD, in place of the frame instead, for checks only).
+#include "target.h"
 #include "vk_fg.h"
 #include "vk_fsr3.h"
 
@@ -262,6 +263,7 @@ extern "C" VkFgEngine vk_fg_engine(void) {
     if (__atomic_load_n(&seen, __ATOMIC_ACQUIRE) != v + 1) {
         const char *s = cfg_value("TOTK_FRAME_GEN");
         int n = !strcmp(s, "fsr3") ? VK_FG_FSR3 : VK_FG_OFF;
+        if (n && rt_target()->scene_passes_off) n = VK_FG_OFF;   // as the scene upscalers: TotK's engine only
         static char said[16];
         if (strncmp(said, s, sizeof said - 1)) {
             snprintf(said, sizeof said, "%s", s);

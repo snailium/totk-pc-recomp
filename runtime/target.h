@@ -61,7 +61,17 @@ typedef struct RTTarget {
     int free_cores;
     int frame_queue;
     int replay_async_off;
+    // The scene passes (DLSS, FSR 3.1, frame generation) need the title's scene recognised by shape and its camera
+    // and object uniforms found - both measured on TotK's engine. A title whose engine they do not know sets this,
+    // and every scene engine answers "not available on this title" instead of arming on a pass they mistook.
+    int scene_passes_off;
     const char *vk_present;
 } RTTarget;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 const RTTarget *rt_target(void);
+#ifdef __cplusplus
+}
+#endif

@@ -641,7 +641,9 @@ static const char *row_scene_upscaler(void) {
     for (int i = 0; i < 3; i++) {
         int why = vk_upscaler_missing(engines[i]);
         if (why) {
-            UiTextId t = why == UPSCALER_MISSING_DLL ? UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL : UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU;
+            UiTextId t = why == UPSCALER_MISSING_TITLE ? UI_MENU_SCENE_UPSCALER_NO_TITLE
+                       : why == UPSCALER_MISSING_DLL    ? UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL
+                                                         : UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU;
             size_t k = strlen(note);
             snprintf(note + k, sizeof note - k, "%s%s", k ? "; " : "", menu_text(t));
         }

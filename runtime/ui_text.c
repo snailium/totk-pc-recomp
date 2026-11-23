@@ -194,6 +194,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_SCENE_UPSCALER_FSR3] = "AMD FSR 3.1",
     [UI_MENU_SCENE_UPSCALER_NO_DLSS_GPU] = "DLSS: needs an NVIDIA RTX GPU",
     [UI_MENU_SCENE_UPSCALER_NO_DLSS_DLL] = "DLSS: " DLSS_FILE " is missing",
+    [UI_MENU_SCENE_UPSCALER_NO_TITLE] = "not available on this title: the scene passes know TotK's engine only",
     [UI_MENU_FSR3_SHARPNESS] = "FSR 3.1 sharpness",
     [UI_MENU_FSR3_SHARPNESS_DESC] = "Sharpening of the 3D scene after FSR 3.1; 0 turns it off.",
 

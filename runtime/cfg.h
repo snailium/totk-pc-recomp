@@ -76,7 +76,7 @@ const char *cfg_scene_upscaler(void);
 // 1 while the settings still name it (the menu switches it off at once), the engine that is running (it
 // ran and has not failed; 0 none), and why an engine cannot run here (UPSCALER_MISSING_*, 0 it can).
 enum { UPSCALER_OFF, UPSCALER_DLSS, UPSCALER_FSR3 };
-enum { UPSCALER_MISSING_GPU = 1, UPSCALER_MISSING_DLL };
+enum { UPSCALER_MISSING_GPU = 1, UPSCALER_MISSING_DLL, UPSCALER_MISSING_TITLE };   // TITLE: this title's engine
 int vk_upscaler_engine(void);
 int vk_upscaler_on(void);
 int vk_upscaler_running(void);

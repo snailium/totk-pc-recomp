@@ -18,6 +18,7 @@
 #include <wchar.h>
 
 #include "cfg.h"
+#include "target.h"
 #include "host.h"
 #include "platform/platform.h"
 #include "vk.h"
@@ -111,6 +112,10 @@ int vk_upscaler_engine(void) {
     if (e < 0) {
         const char *v = cfg_scene_upscaler();
         e = !strcmp(v, "dlss") ? UPSCALER_DLSS : !strcmp(v, "fsr3") ? UPSCALER_FSR3 : UPSCALER_OFF;
+        if (e && rt_target()->scene_passes_off)
+            // The scene passes know TotK's engine only (the G-buffer and light-target shape, the camera and object
+            // uniforms, the jitter copy). On a title they do not know they would arm on a pass they mistook.
+            e = UPSCALER_OFF;
     }
     return e;
 }
@@ -358,6 +363,7 @@ int vk_upscaler_running(void) {
 // For the menu. DLSS: after a start with it picked, what NGX said; before, an NVIDIA GPU and the DLL (an NVIDIA GPU
 // without RTX shows only once NGX came up). FSR 3.1 is built in.
 int vk_upscaler_missing(int engine) {
+    if (rt_target()->scene_passes_off) return UPSCALER_MISSING_TITLE;   // the row says why and offers "off" only
     if (engine != UPSCALER_DLSS) return 0;
     if (!res_dlss_dll()) return UPSCALER_MISSING_DLL;
     if (N.tried) return N.available ? 0 : UPSCALER_MISSING_GPU;
